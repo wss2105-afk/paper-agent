@@ -7,6 +7,7 @@ import pdfplumber
 import streamlit as st
 from dotenv import load_dotenv
 
+import streamlit.components.v1 as components
 from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown
@@ -165,17 +166,32 @@ st.set_page_config(page_title="논문 작성 도우미", page_icon="📝", layou
 st.markdown("""
 <style>
 details summary p { font-size: 0.9rem !important; font-weight: 500 !important; }
-
-/* 기본 스포츠 아이콘 숨기기 */
 [data-testid="stStatusWidget"] svg { display: none !important; }
-
-/* 논문 도구에 맞는 아이콘으로 교체 */
-[data-testid="stStatusWidget"]::before {
-    content: "📝";
-    font-size: 1.2rem;
-}
 </style>
 """, unsafe_allow_html=True)
+
+components.html("""
+<script>
+const icons = ['📝','📚','🔍','✏️','📖','🎓','🔬','📊','💡','📋'];
+let idx = 0;
+function updateIcon() {
+    const doc = window.parent.document;
+    const widget = doc.querySelector('[data-testid="stStatusWidget"]');
+    if (!widget) return;
+    let span = doc.querySelector('#academic-icon');
+    if (!span) {
+        span = doc.createElement('span');
+        span.id = 'academic-icon';
+        span.style.cssText = 'font-size:1.3rem;vertical-align:middle;line-height:1;';
+        widget.insertBefore(span, widget.firstChild);
+    }
+    span.textContent = icons[idx % icons.length];
+    idx++;
+}
+updateIcon();
+setInterval(updateIcon, 700);
+</script>
+""", height=0)
 st.title("📝 논문 작성 도우미")
 st.caption("교육공학 논문 작성을 위한 AI 에이전트")
 
