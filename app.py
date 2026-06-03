@@ -46,7 +46,7 @@ def get_library():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit, source, version=3):
+def cached_search(query, limit, source, version=4):
     return search_papers(query, limit=limit, source=source)
 
 
@@ -167,6 +167,9 @@ st.markdown("""
 <style>
 details summary p { font-size: 0.9rem !important; font-weight: 500 !important; }
 [data-testid="stStatusWidget"] svg { display: none !important; }
+.paper-title { font-size: 0.92rem !important; font-weight: 600 !important; margin-bottom: 2px !important; line-height: 1.4 !important; }
+.paper-meta  { font-size: 0.80rem !important; color: gray !important; margin: 0 !important; }
+.paper-abs   { font-size: 0.85rem !important; margin-top: 4px !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -422,7 +425,7 @@ elif mode == "🔍 문헌 추천":
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
         with st.spinner(f"{source} 검색 중..."):
             try:
-                papers = cached_search(topic, num_results, source, version=3)
+                papers = cached_search(topic, num_results, source, version=4)
             except Exception as e:
                 st.error(f"❌ {e}")
                 st.info("💡 영어 키워드로 입력해보세요.\n예) blended learning, flipped classroom")
@@ -477,10 +480,9 @@ elif mode == "🔍 문헌 추천":
                 link_html = f' <a href="{p["url"]}" target="_blank">🔗</a>' if p.get("url") else ""
 
                 st.markdown(
-                    f"<p style='font-size:0.92rem;font-weight:600;margin-bottom:2px'>"
-                    f"{i+1}. {p['title']}{link_html}</p>"
-                    f"<p style='color:gray;font-size:0.8rem;margin:0'>{meta_line}</p>"
-                    f"<p style='font-size:0.88rem;margin-top:4px'>{abstract_short}</p>",
+                    f"<p class='paper-title'>{i+1}. {p['title']}{link_html}</p>"
+                    f"<p class='paper-meta'>{meta_line}</p>"
+                    f"<p class='paper-abs'>{abstract_short}</p>",
                     unsafe_allow_html=True,
                 )
                 st.divider()
