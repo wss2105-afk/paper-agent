@@ -165,6 +165,15 @@ st.set_page_config(page_title="논문 작성 도우미", page_icon="📝", layou
 st.markdown("""
 <style>
 details summary p { font-size: 0.9rem !important; font-weight: 500 !important; }
+
+/* 기본 스포츠 아이콘 숨기기 */
+[data-testid="stStatusWidget"] svg { display: none !important; }
+
+/* 논문 도구에 맞는 아이콘으로 교체 */
+[data-testid="stStatusWidget"]::before {
+    content: "📝";
+    font-size: 1.2rem;
+}
 </style>
 """, unsafe_allow_html=True)
 st.title("📝 논문 작성 도우미")
