@@ -45,7 +45,7 @@ def get_library():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit, source):
+def cached_search(query, limit, source, _v=2):
     return search_papers(query, limit=limit, source=source)
 
 
@@ -408,20 +408,25 @@ elif mode == "🔍 문헌 추천":
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
             for i, p in enumerate(papers):
-                label = f"{i+1}. {p['title']} ({p['year']})"
-                with st.expander(label):
-                    col_a, col_b = st.columns([3, 1])
-                    with col_a:
-                        st.markdown(f"**저자:** {p['authors']}")
-                        if p.get("journal"):
-                            st.markdown(f"**학술지:** {p['journal']}")
-                        st.markdown(f"**출처:** {p.get('source', '')}")
-                    with col_b:
-                        if p['citations'] != "N/A":
-                            st.metric("인용 횟수", f"{p['citations']}회")
-                    st.markdown(f"**초록:** {p['abstract']}")
-                    if p.get("url"):
-                        st.markdown(f"🔗 [논문 링크]({p['url']})")
+                # 메타 정보 한 줄
+                meta_parts = [p['authors'], str(p['year'])]
+                if p.get("journal"):
+                    meta_parts.append(p["journal"])
+                if p['citations'] not in ("N/A", 0, None):
+                    meta_parts.append(f"인용 {p['citations']}회")
+                meta_line = " · ".join(meta_parts)
+
+                # 초록 3줄 요약
+                abstract_short = p['abstract'][:200].rsplit(" ", 1)[0] + "..."
+
+                link_md = f" [🔗]({p['url']})" if p.get("url") else ""
+                st.markdown(
+                    f"**{i+1}. {p['title']}**{link_md}  \n"
+                    f"<span style='color:gray;font-size:0.85rem'>{meta_line}</span>  \n"
+                    f"{abstract_short}",
+                    unsafe_allow_html=True,
+                )
+                st.divider()
 
 # ── 데이터 분석 설계 ──────────────────────────────────────────
 elif mode == "📊 데이터 분석 설계":
