@@ -502,6 +502,11 @@ elif mode == "🔍 문헌 추천":
     with col3:
         my_topic = st.text_input("내 연구 주제 (선택)", placeholder="Claude 추천 기준")
 
+    ssci_priority = st.checkbox(
+        "🏆 SSCI급 학술지 우선 추천",
+        help="교육학·교육공학 분야 주요 SSCI 등재 학술지 논문을 우선 추천하고, SSCI 여부를 표시해요.",
+    )
+
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
         with st.spinner(f"{source} 검색 중..."):
             try:
@@ -512,15 +517,46 @@ elif mode == "🔍 문헌 추천":
                 papers = []
 
         if papers:
+            # SSCI 우선 모드: 인용 수 있는 논문 먼저 정렬
+            if ssci_priority:
+                def _cite_key(p):
+                    c = p.get("citations")
+                    return c if isinstance(c, int) else 0
+                papers = sorted(papers, key=_cite_key, reverse=True)
+
             paper_list = "\n\n".join(
                 f"[{i+1}] {p['title']}\n"
                 f"저자: {p['authors']} ({p['year']}) | 학술지: {p.get('journal','') or p.get('source','')}\n"
+                f"인용: {p.get('citations', 'N/A')}회\n"
                 f"초록: {p['abstract']}"
                 for i, p in enumerate(papers)
             )
             research_context = f"\n내 연구 주제: {my_topic}" if my_topic else ""
-            prompt = f"""다음 논문 목록을 분석하여 연구에 유용한 순서로 추천해주세요.{research_context}
 
+            SSCI_JOURNALS = """Computers & Education, British Journal of Educational Technology,
+Educational Technology Research and Development, Learning and Instruction,
+Computers in Human Behavior, Internet and Higher Education,
+Journal of Computer Assisted Learning, Educational Researcher,
+Review of Educational Research, American Educational Research Journal,
+Contemporary Educational Psychology, Educational Psychologist,
+Distance Education, Journal of Educational Technology & Society,
+Instructional Science, Journal of the Learning Sciences,
+Metacognition and Learning, Educational Psychology Review,
+Behaviour & Information Technology, Higher Education,
+Teaching and Teacher Education, Educational Research Review"""
+
+            ssci_block = f"""
+[SSCI 우선 추천 모드]
+아래 교육학·교육공학 분야 주요 SSCI 학술지 목록을 참고하여, 해당 학술지 게재 논문을 우선 추천하세요.
+각 논문 제목 앞에 🏆(SSCI 등재 학술지) 또는 📄(미확인)을 표시해주세요.
+인용 수가 높을수록 영향력 있는 논문이므로 우선순위에 반영해주세요.
+
+주요 SSCI 교육학·교육공학 학술지:
+{SSCI_JOURNALS}
+""" if ssci_priority else ""
+
+            prompt = f"""다음 논문 목록을 분석하여 연구에 유용한 순서로 추천해주세요.{research_context}
+{ssci_block}
 검색 키워드: {topic}
 
 [논문 목록]
