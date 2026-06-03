@@ -463,10 +463,16 @@ elif mode == "🔍 문헌 추천":
 
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
+
+            # 첫 번째 논문의 raw 데이터 확인용 (디버그)
+            if papers:
+                with st.expander("🔧 디버그: 첫 번째 논문 raw 데이터", expanded=False):
+                    st.json(papers[0])
+
             for i, p in enumerate(papers):
                 journal = p.get("journal") or ""
                 source  = p.get("source", "")
-                venue_label = journal if journal else f"{source} (학술지 정보 없음)"
+                venue_label = journal if journal else f"({source} — 학술지 정보 없음)"
 
                 citations = p.get("citations")
                 cite_str = f"인용 {citations}회" if citations not in ("N/A", 0, None, "") else ""
@@ -477,12 +483,12 @@ elif mode == "🔍 문헌 추천":
                 meta_line = " · ".join(meta_parts)
 
                 abstract_short = p["abstract"][:200].rsplit(" ", 1)[0] + "..."
-                link_html = f' <a href="{p["url"]}" target="_blank">🔗</a>' if p.get("url") else ""
+                link_html = f' <a href="{p["url"]}" target="_blank" style="font-size:0.8rem">🔗</a>' if p.get("url") else ""
 
                 st.markdown(
-                    f"<p class='paper-title'>{i+1}. {p['title']}{link_html}</p>"
-                    f"<p class='paper-meta'>{meta_line}</p>"
-                    f"<p class='paper-abs'>{abstract_short}</p>",
+                    f"<small><b>{i+1}. {p['title']}</b>{link_html}</small><br>"
+                    f"<small style='color:gray'>{meta_line}</small><br>"
+                    f"<small>{abstract_short}</small>",
                     unsafe_allow_html=True,
                 )
                 st.divider()
