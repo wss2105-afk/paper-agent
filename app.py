@@ -17,6 +17,7 @@ from style_analyzer import (
     load_my_papers, build_style_prompt, save_style_profile,
     load_style_profile, build_style_instruction
 )
+from sjr_data import quartile_badge
 
 load_dotenv()
 
@@ -594,6 +595,8 @@ Teaching and Teacher Education, Educational Research Review"""
                 venue_s   = _html.escape(venue_label)
                 abstract_s = _html.escape((p["abstract"][:200].rsplit(" ", 1)[0] + "..."))
 
+                sjr_badge = quartile_badge(journal)
+
                 author_line = f"{authors_s} ({p['year']})"
                 source_parts = [venue_s]
                 if cite_str:
@@ -610,7 +613,8 @@ Teaching and Teacher Education, Educational Research Review"""
                     f'<p style="font-size:0.78rem;font-weight:600;margin:0 0 1px 0;line-height:1.4">'
                     f'{i+1}. {title_s}{link_tag}</p>'
                     f'<p style="font-size:0.82rem;color:#777;margin:0">{author_line}</p>'
-                    f'<p style="font-size:0.82rem;color:#555;margin:0 0 3px 0">출처: {source_line}</p>'
+                    f'<p style="font-size:0.82rem;color:#555;margin:0 0 3px 0">'
+                    f'출처: {source_line}{sjr_badge}</p>'
                     f'<p style="font-size:0.84rem;margin:2px 0 0 0">{abstract_s}</p>',
                     unsafe_allow_html=True,
                 )
