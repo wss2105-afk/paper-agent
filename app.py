@@ -46,7 +46,7 @@ def get_library():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit, source, _v=2):
+def cached_search(query, limit, source, version=3):
     return search_papers(query, limit=limit, source=source)
 
 
@@ -189,7 +189,7 @@ function updateIcon() {
     idx++;
 }
 updateIcon();
-setInterval(updateIcon, 700);
+setInterval(updateIcon, 1500);
 </script>
 """, height=0)
 st.title("📝 논문 작성 도우미")
@@ -385,7 +385,7 @@ elif mode == "🔍 문헌 추천":
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
         with st.spinner(f"{source} 검색 중..."):
             try:
-                papers = cached_search(topic, num_results, source)
+                papers = cached_search(topic, num_results, source, version=3)
             except Exception as e:
                 st.error(f"❌ {e}")
                 st.info("💡 영어 키워드로 입력해보세요.\n예) blended learning, flipped classroom")
