@@ -339,20 +339,57 @@ elif mode == "✒️ 인용 자동 삽입":
     st.subheader("✒️ 인용 자동 삽입")
     st.caption("초안 텍스트를 붙여넣으면 Claude가 인용이 필요한 부분을 찾아 참고문헌을 자동으로 삽입해요.")
 
-    if not library.is_ready():
+    cite_source = st.radio(
+        "참고문헌 출처 선택",
+        ["📁 내 라이브러리만", "🌐 외부 검색 포함 (Semantic Scholar + arXiv)"],
+        horizontal=True,
+    )
+    use_external = cite_source.startswith("🌐")
+
+    if not use_external and not library.is_ready():
         st.warning("먼저 사이드바에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
     else:
         draft = st.text_area("초안 텍스트를 입력하세요", height=250,
                              placeholder="인용을 넣고 싶은 글을 여기에 붙여넣으세요...")
-        top_k = st.slider("검색할 참고문헌 수", 3, 10, 5)
+        top_k = st.slider("참고할 논문 수", 3, 10, 5)
 
         if st.button("✒️ 인용 삽입", use_container_width=True, disabled=not draft):
-            with st.spinner("관련 문헌 검색 중..."):
-                # 초안 전체를 쿼리로 사용해 관련 문헌 검색
-                results = library.search(draft[:300], top_k=top_k)
+            results = []
+
+            if not use_external:
+                # 내 라이브러리에서 검색
+                with st.spinner("라이브러리에서 관련 문헌 검색 중..."):
+                    lib_results = library.search(draft[:300], top_k=top_k)
+                results = [
+                    {"source": r["source"], "text": r["text"]}
+                    for r in lib_results
+                ]
+            else:
+                # 외부 검색 (Semantic Scholar + arXiv)
+                with st.spinner("외부 검색 중 (Semantic Scholar + arXiv)..."):
+                    try:
+                        ext_papers = cached_search(draft[:200], top_k, "둘 다", version=3)
+                        results = [
+                            {
+                                "source": f"{p['authors']} ({p['year']})",
+                                "text": p["abstract"],
+                            }
+                            for p in ext_papers
+                        ]
+                    except Exception as e:
+                        st.error(f"외부 검색 오류: {e}")
+
+                # 라이브러리도 함께 활용 (있으면)
+                if library.is_ready():
+                    lib_results = library.search(draft[:300], top_k=3)
+                    lib_formatted = [
+                        {"source": r["source"], "text": r["text"]}
+                        for r in lib_results
+                    ]
+                    results = lib_formatted + results
 
             if not results:
-                st.error("관련 문헌을 찾지 못했어요. PDF를 더 업로드해보세요.")
+                st.error("관련 문헌을 찾지 못했어요.")
             else:
                 with st.expander(f"🔍 활용할 참고문헌 {len(results)}개", expanded=False):
                     for r in results:
