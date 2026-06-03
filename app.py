@@ -461,22 +461,26 @@ elif mode == "🔍 문헌 추천":
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
             for i, p in enumerate(papers):
-                # 메타 정보 한 줄
-                meta_parts = [p['authors'], str(p['year'])]
-                if p.get("journal"):
-                    meta_parts.append(p["journal"])
-                if p['citations'] not in ("N/A", 0, None):
-                    meta_parts.append(f"인용 {p['citations']}회")
+                journal = p.get("journal") or ""
+                source  = p.get("source", "")
+                venue_label = journal if journal else f"{source} (학술지 정보 없음)"
+
+                citations = p.get("citations")
+                cite_str = f"인용 {citations}회" if citations not in ("N/A", 0, None, "") else ""
+
+                meta_parts = [p["authors"], str(p["year"]), venue_label]
+                if cite_str:
+                    meta_parts.append(cite_str)
                 meta_line = " · ".join(meta_parts)
 
-                # 초록 3줄 요약
-                abstract_short = p['abstract'][:200].rsplit(" ", 1)[0] + "..."
+                abstract_short = p["abstract"][:200].rsplit(" ", 1)[0] + "..."
+                link_html = f' <a href="{p["url"]}" target="_blank">🔗</a>' if p.get("url") else ""
 
-                link_md = f" [🔗]({p['url']})" if p.get("url") else ""
                 st.markdown(
-                    f"**{i+1}. {p['title']}**{link_md}  \n"
-                    f"<span style='color:gray;font-size:0.85rem'>{meta_line}</span>  \n"
-                    f"{abstract_short}",
+                    f"<p style='font-size:0.92rem;font-weight:600;margin-bottom:2px'>"
+                    f"{i+1}. {p['title']}{link_html}</p>"
+                    f"<p style='color:gray;font-size:0.8rem;margin:0'>{meta_line}</p>"
+                    f"<p style='font-size:0.88rem;margin-top:4px'>{abstract_short}</p>",
                     unsafe_allow_html=True,
                 )
                 st.divider()
