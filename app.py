@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown
+from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
 
 load_dotenv()
 
@@ -172,8 +173,8 @@ with st.sidebar:
     mode = st.radio(
         "원하는 작업을 선택하세요",
         ["💬 자유 질문", "📚 단락 작성 (RAG)", "✒️ 인용 자동 삽입",
-         "🔍 문헌 추천", "📄 PDF 분석", "🏗️ 논문 구조 설계",
-         "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
+         "🔍 문헌 추천", "📊 데이터 분석 설계", "📄 PDF 분석",
+         "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
     )
 
     st.divider()
@@ -400,6 +401,91 @@ elif mode == "🔍 문헌 추천":
                     st.markdown(f"**초록:** {p['abstract']}")
                     if p.get("url"):
                         st.markdown(f"**링크:** [{p['url']}]({p['url']})")
+
+# ── 데이터 분석 설계 ──────────────────────────────────────────
+elif mode == "📊 데이터 분석 설계":
+    st.subheader("📊 데이터 분석 설계")
+    st.caption("Excel, SPSS, 인터뷰 텍스트를 업로드하면 데이터 구조를 파악하고 연구문제와 분석 방법을 제안해드려요.")
+
+    uploaded_data = st.file_uploader(
+        "데이터 파일 업로드",
+        type=["xlsx", "xls", "sav", "csv", "txt", "docx"],
+        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx) 지원",
+    )
+    research_context = st.text_input(
+        "연구 맥락 (선택)",
+        placeholder="예: 대학생 블렌디드 러닝 경험 설문조사",
+        help="어떤 연구인지 간단히 설명하면 더 정확한 제안을 드릴 수 있어요",
+    )
+
+    if uploaded_data:
+        try:
+            with st.spinner("파일 읽는 중..."):
+                data_type, data, meta = load_file(uploaded_data)
+
+            if data_type == "quantitative":
+                st.success(f"✅ 정량 데이터 로드 완료 — {len(data)}행 × {len(data.columns)}열")
+
+                tab1, tab2 = st.tabs(["📋 데이터 미리보기", "📈 기술통계"])
+                with tab1:
+                    st.dataframe(get_preview(data), use_container_width=True)
+                with tab2:
+                    stats = get_basic_stats(data)
+                    if stats is not None:
+                        st.dataframe(stats, use_container_width=True)
+                    else:
+                        st.info("수치형 변수가 없어요.")
+
+                summary = summarize_dataframe(data, meta)
+
+            else:  # qualitative
+                st.success(f"✅ 인터뷰 텍스트 로드 완료")
+                with st.expander("텍스트 미리보기"):
+                    st.text(data[:1000] + ("..." if len(data) > 1000 else ""))
+                summary = summarize_interview(data)
+
+            analysis_goal = st.selectbox(
+                "분석 목적",
+                ["연구문제 제안", "분석 방법 추천", "연구문제 + 분석 방법 모두"],
+            )
+
+            if st.button("🔍 분석 설계 시작", use_container_width=True):
+                context_line = f"\n연구 맥락: {research_context}" if research_context else ""
+                data_type_label = "정량(설문/측정) 데이터" if data_type == "quantitative" else "질적(인터뷰) 데이터"
+
+                prompt = f"""다음 {data_type_label}의 구조를 분석하여 {analysis_goal}을 제안해주세요.{context_line}
+
+## 데이터 구조
+{summary}
+
+제안 지침:
+1. **연구문제**: 이 데이터로 탐구할 수 있는 구체적인 연구문제 3~5개를 제안하세요.
+   - 각 연구문제는 "~은 ~에 어떤 영향을 미치는가?" 형식으로 작성
+   - 변수 이름을 직접 활용할 것
+
+2. **분석 방법**: 각 연구문제에 맞는 통계/분석 방법을 추천하세요.
+   - 정량: t검정, ANOVA, 회귀분석, 구조방정식 등
+   - 질적: 주제 분석, 근거이론, 내러티브 분석 등
+   - 분석 소프트웨어(SPSS, R, NVivo 등)도 함께 추천
+
+3. **주의사항**: 데이터의 한계나 분석 시 유의할 점을 언급하세요.
+
+교육공학 연구 맥락에서 답변해주세요."""
+
+                with st.spinner("Claude가 분석 설계 중..."):
+                    result = chat_with_claude([{"role": "user", "content": prompt}])
+
+                st.markdown("### 분석 설계 제안")
+                st.markdown(result)
+                st.download_button(
+                    "📋 분석 설계 저장 (.txt)",
+                    result,
+                    file_name="분석설계제안.txt",
+                    mime="text/plain",
+                )
+
+        except Exception as e:
+            st.error(f"❌ 파일 로드 오류: {e}")
 
 # ── PDF 분석 ─────────────────────────────────────────────────
 elif mode == "📄 PDF 분석":

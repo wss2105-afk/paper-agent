@@ -6,3 +6,6 @@ rank-bm25
 requests
 arxiv
 python-docx
+pandas
+openpyxl
+pyreadstat
