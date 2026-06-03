@@ -175,6 +175,28 @@ with st.sidebar:
                         st.text(e)
             st.rerun()
 
+    # 전체 초기화
+    st.divider()
+    if st.button("🗑️ 전체 초기화 (PDF + 인덱스)", use_container_width=True, type="secondary"):
+        st.session_state.confirm_reset = True
+
+    if st.session_state.get("confirm_reset"):
+        st.warning("정말 삭제할까요? 모든 PDF와 학습 데이터가 사라져요.")
+        col1, col2 = st.columns(2)
+        if col1.button("✅ 확인", use_container_width=True):
+            import shutil
+            for f in PDF_DIR.glob("*.pdf"):
+                f.unlink()
+            if DB_DIR.exists():
+                shutil.rmtree(DB_DIR)
+                DB_DIR.mkdir(parents=True, exist_ok=True)
+            get_library.clear()
+            st.session_state.confirm_reset = False
+            st.rerun()
+        if col2.button("❌ 취소", use_container_width=True):
+            st.session_state.confirm_reset = False
+            st.rerun()
+
     st.divider()
     if st.button("대화 초기화"):
         st.session_state.messages = []
