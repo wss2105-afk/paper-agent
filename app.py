@@ -8,11 +8,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from rag import ReferenceLibrary
-from scholar import search_papers, format_paper
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit):
-    return search_papers(query, limit=limit)
+from scholar import search_papers
+from export import to_word, to_markdown
 
 load_dotenv()
 
@@ -44,6 +41,11 @@ SYSTEM_PROMPT = """당신은 교육공학 분야의 학술 논문 작성을 전�
 @st.cache_resource
 def get_library():
     return ReferenceLibrary(db_path=str(DB_DIR))
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_search(query, limit, source):
+    return search_papers(query, limit=limit, source=source)
 
 
 def extract_pdf_text(file_path):
@@ -98,6 +100,65 @@ def write_paragraph_with_refs(topic, style, results):
     return response.content[0].text
 
 
+def insert_citations(draft_text, search_results):
+    ref_texts = "\n\n".join(
+        f"[논문 {i+1}: {r['source']}]\n{r['text']}"
+        for i, r in enumerate(search_results)
+    )
+    prompt = f"""다음 초안 텍스트에서 인용이 필요한 주장이나 사실을 찾아 참고문헌을 자동으로 삽입해주세요.
+
+[초안 텍스트]
+{draft_text}
+
+[사용 가능한 참고문헌]
+{ref_texts}
+
+작업 지침:
+1. 인용이 필요한 문장을 찾아 (저자, 연도) 형식으로 삽입하세요.
+2. 참고문헌 내용과 실제로 관련된 곳에만 삽입하세요.
+3. 수정된 전체 텍스트를 출력하세요.
+4. 마지막에 "**참고문헌:**" 섹션을 추가하세요.
+5. 인용을 삽입한 위치와 이유를 간단히 설명하세요.
+"""
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
+def export_buttons(content, topic, key_prefix):
+    """단락 결과 아래에 내보내기 버튼 표시"""
+    st.markdown("**내보내기**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.download_button(
+            "📄 Word (.docx)",
+            data=to_word("논문 단락", content, topic),
+            file_name=f"{topic[:20]}_단락.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key=f"{key_prefix}_docx",
+        )
+    with col2:
+        st.download_button(
+            "📝 Markdown (.md)",
+            data=to_markdown("논문 단락", content, topic),
+            file_name=f"{topic[:20]}_단락.md",
+            mime="text/markdown",
+            key=f"{key_prefix}_md",
+        )
+    with col3:
+        st.download_button(
+            "📋 텍스트 (.txt)",
+            data=content,
+            file_name=f"{topic[:20]}_단락.txt",
+            mime="text/plain",
+            key=f"{key_prefix}_txt",
+        )
+
+
 # ── 페이지 설정 ───────────────────────────────────────────────
 st.set_page_config(page_title="논문 작성 도우미", page_icon="📝", layout="wide")
 st.title("📝 논문 작성 도우미")
@@ -110,8 +171,9 @@ with st.sidebar:
     st.header("기능 선택")
     mode = st.radio(
         "원하는 작업을 선택하세요",
-        ["💬 자유 질문", "📚 단락 작성 (RAG)", "🔍 문헌 추천",
-         "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
+        ["💬 자유 질문", "📚 단락 작성 (RAG)", "✒️ 인용 자동 삽입",
+         "🔍 문헌 추천", "📄 PDF 분석", "🏗️ 논문 구조 설계",
+         "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
     )
 
     st.divider()
@@ -127,12 +189,10 @@ with st.sidebar:
     else:
         st.warning("⚠️ 업로드된 논문 없음")
 
-    # PDF 업로드
     uploaded_files = st.file_uploader(
         "PDF 업로드 (여러 개 가능)",
         type="pdf",
         accept_multiple_files=True,
-        help="참고문헌으로 사용할 논문 PDF를 업로드하세요",
     )
 
     if uploaded_files:
@@ -147,7 +207,6 @@ with st.sidebar:
         if new_files:
             st.info(f"{len(new_files)}개 파일 저장됨")
 
-    # 저장된 파일 목록
     saved_pdfs = list(PDF_DIR.glob("*.pdf"))
     if saved_pdfs:
         with st.expander(f"저장된 논문 {len(saved_pdfs)}개 보기"):
@@ -158,8 +217,6 @@ with st.sidebar:
                     p.unlink()
                     st.rerun()
 
-    # 학습 시작 버튼
-    if saved_pdfs:
         if st.button("🔄 문헌 학습 시작", use_container_width=True):
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -180,8 +237,8 @@ with st.sidebar:
                         st.text(e)
             st.rerun()
 
-    # 전체 초기화
     st.divider()
+
     if st.button("🗑️ 전체 초기화 (PDF + 인덱스)", use_container_width=True, type="secondary"):
         st.session_state.confirm_reset = True
 
@@ -214,20 +271,15 @@ if "messages" not in st.session_state:
 # ── 단락 작성 (RAG) ───────────────────────────────────────────
 if mode == "📚 단락 작성 (RAG)":
     st.subheader("📚 참고문헌 기반 단락 작성")
-
     if not library.is_ready():
         st.warning("먼저 사이드바에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
     else:
-        topic = st.text_input(
-            "작성할 주제를 입력하세요",
-            placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향",
-        )
+        topic = st.text_input("작성할 주제를 입력하세요",
+                              placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향")
         col1, col2 = st.columns(2)
         with col1:
-            style = st.selectbox(
-                "단락 유형",
-                ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"],
-            )
+            style = st.selectbox("단락 유형",
+                                 ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"])
         with col2:
             top_k = st.slider("참고할 논문 수", 3, 8, 5)
 
@@ -236,7 +288,7 @@ if mode == "📚 단락 작성 (RAG)":
                 results = library.search(topic, top_k=top_k)
 
             if not results:
-                st.error("관련 문헌을 찾지 못했어요. 다른 키워드로 시도해보세요.")
+                st.error("관련 문헌을 찾지 못했어요.")
             else:
                 with st.expander(f"🔍 검색된 참고문헌 {len(results)}개", expanded=False):
                     for r in results:
@@ -249,44 +301,69 @@ if mode == "📚 단락 작성 (RAG)":
 
                 st.markdown("### 작성된 단락")
                 st.markdown(paragraph)
-                st.download_button(
-                    "📋 텍스트로 저장",
-                    paragraph,
-                    file_name=f"{topic[:20]}_단락.txt",
-                    mime="text/plain",
-                )
+                export_buttons(paragraph, topic, "rag")
+
+# ── 인용 자동 삽입 ────────────────────────────────────────────
+elif mode == "✒️ 인용 자동 삽입":
+    st.subheader("✒️ 인용 자동 삽입")
+    st.caption("초안 텍스트를 붙여넣으면 Claude가 인용이 필요한 부분을 찾아 참고문헌을 자동으로 삽입해요.")
+
+    if not library.is_ready():
+        st.warning("먼저 사이드바에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
+    else:
+        draft = st.text_area("초안 텍스트를 입력하세요", height=250,
+                             placeholder="인용을 넣고 싶은 글을 여기에 붙여넣으세요...")
+        top_k = st.slider("검색할 참고문헌 수", 3, 10, 5)
+
+        if st.button("✒️ 인용 삽입", use_container_width=True, disabled=not draft):
+            with st.spinner("관련 문헌 검색 중..."):
+                # 초안 전체를 쿼리로 사용해 관련 문헌 검색
+                results = library.search(draft[:300], top_k=top_k)
+
+            if not results:
+                st.error("관련 문헌을 찾지 못했어요. PDF를 더 업로드해보세요.")
+            else:
+                with st.expander(f"🔍 활용할 참고문헌 {len(results)}개", expanded=False):
+                    for r in results:
+                        st.markdown(f"**{r['source']}**")
+                        st.caption(r["text"][:200] + "...")
+                        st.divider()
+
+                with st.spinner("인용 삽입 중..."):
+                    result_text = insert_citations(draft, results)
+
+                st.markdown("### 인용이 삽입된 텍스트")
+                st.markdown(result_text)
+                export_buttons(result_text, "인용삽입결과", "cite")
 
 # ── 문헌 추천 ────────────────────────────────────────────────
 elif mode == "🔍 문헌 추천":
-    st.subheader("🔍 Semantic Scholar 문헌 추천")
-    st.caption("연구 주제를 입력하면 관련 논문을 검색하고 Claude가 추천해드려요.")
+    st.subheader("🔍 문헌 추천")
+    st.caption("연구 주제를 입력하면 Semantic Scholar / arXiv에서 관련 논문을 검색하고 Claude가 추천해드려요.")
 
-    topic = st.text_input(
-        "연구 주제 또는 키워드 입력",
-        placeholder="예: blended learning student motivation",
-        help="영어 키워드로 입력하면 검색 결과가 더 풍부해요",
-    )
-    col1, col2 = st.columns(2)
+    topic = st.text_input("연구 주제 또는 키워드 입력",
+                          placeholder="예: blended learning student motivation")
+    col1, col2, col3 = st.columns(3)
     with col1:
-        num_results = st.slider("검색 논문 수", 5, 20, 10)
+        source = st.selectbox("검색 소스", ["Semantic Scholar", "arXiv", "둘 다"])
     with col2:
-        my_topic = st.text_input("내 연구 주제 (선택)", placeholder="Claude 추천 기준으로 사용")
+        num_results = st.slider("검색 논문 수", 5, 20, 10)
+    with col3:
+        my_topic = st.text_input("내 연구 주제 (선택)", placeholder="Claude 추천 기준")
 
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
-        with st.spinner("Semantic Scholar 검색 중..."):
+        with st.spinner(f"{source} 검색 중..."):
             try:
-                raw_papers = cached_search(topic, num_results)
-                papers = [format_paper(p) for p in raw_papers]
+                papers = cached_search(topic, num_results, source)
             except Exception as e:
                 st.error(f"❌ {e}")
-                st.info("💡 팁: 키워드를 영어로 입력하면 결과가 더 잘 나와요.\n예) blended learning, flipped classroom, AI tutoring")
+                st.info("💡 영어 키워드로 입력해보세요.\n예) blended learning, flipped classroom")
                 papers = []
 
         if papers:
-            # Claude에게 추천 분석 요청
             paper_list = "\n\n".join(
                 f"[{i+1}] {p['title']}\n"
-                f"저자: {p['authors']} ({p['year']}) | 인용: {p['citations']}회\n"
+                f"저자: {p['authors']} ({p['year']}) | 출처: {p.get('source','')}\n"
                 f"초록: {p['abstract']}"
                 for i, p in enumerate(papers)
             )
@@ -310,15 +387,18 @@ elif mode == "🔍 문헌 추천":
 
             st.markdown("### Claude 추천 분석")
             st.markdown(recommendation)
+            st.download_button("📋 추천 결과 저장 (.txt)", recommendation,
+                               file_name="문헌추천결과.txt", mime="text/plain")
 
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
             for i, p in enumerate(papers):
-                with st.expander(f"{i+1}. {p['title']} ({p['year']})"):
+                with st.expander(f"{i+1}. [{p.get('source','')}] {p['title']} ({p['year']})"):
                     st.markdown(f"**저자:** {p['authors']}")
-                    st.markdown(f"**인용 횟수:** {p['citations']}회")
+                    if p['citations'] != "N/A":
+                        st.markdown(f"**인용 횟수:** {p['citations']}회")
                     st.markdown(f"**초록:** {p['abstract']}")
-                    if p["url"]:
+                    if p.get("url"):
                         st.markdown(f"**링크:** [{p['url']}]({p['url']})")
 
 # ── PDF 분석 ─────────────────────────────────────────────────
@@ -332,10 +412,8 @@ elif mode == "📄 PDF 분석":
             pdf_text = extract_pdf_text(tmp_path)
         os.unlink(tmp_path)
         st.success(f"PDF 로드 완료 ({len(pdf_text)}자)")
-        analyze_option = st.selectbox(
-            "분석 유형 선택",
-            ["핵심 내용 요약", "연구 방법 분석", "이론적 배경 정리", "연구 결과 요약", "비판적 검토"],
-        )
+        analyze_option = st.selectbox("분석 유형 선택",
+            ["핵심 내용 요약", "연구 방법 분석", "이론적 배경 정리", "연구 결과 요약", "비판적 검토"])
         if st.button("분석 시작"):
             prompt = f"다음 논문을 '{analyze_option}' 관점에서 분석해주세요:\n\n{pdf_text[:8000]}"
             st.session_state.messages.append({"role": "user", "content": prompt})
@@ -355,9 +433,8 @@ elif mode == "🏗️ 논문 구조 설계":
 elif mode == "✍️ 글쓰기 교정":
     st.subheader("글쓰기 교정")
     text_input = st.text_area("교정할 문장/문단을 입력하세요", height=200)
-    correction_type = st.selectbox(
-        "교정 유형", ["학술체로 변환", "문장 명확성 개선", "논리 흐름 개선", "전체 교정"]
-    )
+    correction_type = st.selectbox("교정 유형",
+        ["학술체로 변환", "문장 명확성 개선", "논리 흐름 개선", "전체 교정"])
     if st.button("교정 시작") and text_input:
         prompt = f"다음 글을 '{correction_type}' 관점에서 교정해주세요. 원문과 수정본을 나란히 보여주고, 수정 이유도 설명해주세요:\n\n{text_input}"
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -373,7 +450,7 @@ elif mode == "🔖 참고문헌 변환":
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
-if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환", "🔍 문헌 추천"]:
+if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"]:
     for msg in st.session_state.messages:
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":

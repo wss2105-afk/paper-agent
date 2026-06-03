@@ -4,3 +4,5 @@ pdfplumber
 python-dotenv
 rank-bm25
 requests
+arxiv
+python-docx

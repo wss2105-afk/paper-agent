@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import arxiv as arxiv_lib
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,authors,year,abstract,citationCount,url,externalIds"
@@ -17,65 +18,99 @@ def _get_headers():
     return headers
 
 
-def search_papers(query, limit=10, retries=2):
-    params = {
-        "query": query,
-        "fields": FIELDS,
-        "limit": limit,
-    }
+def search_semantic_scholar(query, limit=10, retries=2):
+    params = {"query": query, "fields": FIELDS, "limit": limit}
     for attempt in range(retries + 1):
         try:
             response = requests.get(
-                SEMANTIC_SCHOLAR_URL,
-                params=params,
-                headers=_get_headers(),
-                timeout=15,
+                SEMANTIC_SCHOLAR_URL, params=params, headers=_get_headers(), timeout=15
             )
             if response.status_code == 429:
                 if attempt < retries:
                     time.sleep(3)
                     continue
-                raise Exception("API 요청 한도 초과예요. 잠시 후(1~2분) 다시 시도해주세요.")
+                raise Exception("Semantic Scholar API 한도 초과. 잠시 후 다시 시도해주세요.")
             if response.status_code == 400:
-                raise Exception("검색어를 확인해주세요. 영어 키워드를 권장해요.")
+                raise Exception("검색어를 확인해주세요.")
             response.raise_for_status()
-            data = response.json()
-            papers = data.get("data", [])
-            if not papers:
-                raise Exception("검색 결과가 없어요. 다른 키워드로 시도해보세요.")
-            return papers
+            papers = response.json().get("data", [])
+            return [format_paper(p) for p in papers]
         except requests.exceptions.Timeout:
             if attempt < retries:
                 time.sleep(2)
                 continue
-            raise Exception("검색 시간이 초과됐어요. 다시 시도해주세요.")
+            raise Exception("Semantic Scholar 검색 시간 초과.")
         except requests.exceptions.ConnectionError:
-            raise Exception("네트워크 연결 오류가 발생했어요. 잠시 후 다시 시도해주세요.")
+            raise Exception("네트워크 연결 오류.")
         except requests.exceptions.RequestException as e:
-            raise Exception(f"검색 중 오류 발생: {e}")
-    raise Exception("검색에 실패했어요. 잠시 후 다시 시도해주세요.")
+            raise Exception(f"검색 오류: {e}")
+    raise Exception("검색 실패. 잠시 후 다시 시도해주세요.")
+
+
+def search_arxiv(query, limit=10):
+    try:
+        client = arxiv_lib.Client()
+        search = arxiv_lib.Search(
+            query=query,
+            max_results=limit,
+            sort_by=arxiv_lib.SortCriterion.Relevance,
+        )
+        results = list(client.results(search))
+        papers = []
+        for r in results:
+            authors = ", ".join(a.name for a in r.authors[:3])
+            if len(r.authors) > 3:
+                authors += " et al."
+            abstract = r.summary or "초록 없음"
+            papers.append({
+                "title": r.title,
+                "authors": authors,
+                "year": r.published.year if r.published else "연도 미상",
+                "abstract": abstract[:500] + ("..." if len(abstract) > 500 else ""),
+                "citations": "N/A",
+                "url": r.entry_id,
+                "source": "arXiv",
+            })
+        return papers
+    except Exception as e:
+        raise Exception(f"arXiv 검색 오류: {e}")
+
+
+def search_papers(query, limit=10, source="Semantic Scholar"):
+    if source == "Semantic Scholar":
+        return search_semantic_scholar(query, limit)
+    elif source == "arXiv":
+        return search_arxiv(query, limit)
+    else:  # 둘 다
+        half = max(limit // 2, 3)
+        results = []
+        try:
+            results += search_semantic_scholar(query, half)
+        except Exception:
+            pass
+        try:
+            results += search_arxiv(query, half)
+        except Exception:
+            pass
+        if not results:
+            raise Exception("검색 결과가 없어요. 다른 키워드로 시도해주세요.")
+        return results
 
 
 def format_paper(paper):
+    """Semantic Scholar raw API 응답을 정형화"""
     authors = ", ".join(a.get("name", "") for a in paper.get("authors", [])[:3])
     if len(paper.get("authors", [])) > 3:
         authors += " et al."
-    year = paper.get("year", "연도 미상")
-    title = paper.get("title", "제목 없음")
     abstract = paper.get("abstract") or "초록 없음"
-    citations = paper.get("citationCount", 0)
-    url = paper.get("url", "")
-
-    doi = ""
-    ext_ids = paper.get("externalIds", {})
-    if ext_ids and ext_ids.get("DOI"):
-        doi = f"https://doi.org/{ext_ids['DOI']}"
-
+    ext_ids = paper.get("externalIds") or {}
+    doi_url = f"https://doi.org/{ext_ids['DOI']}" if ext_ids.get("DOI") else ""
     return {
-        "title": title,
+        "title": paper.get("title", "제목 없음"),
         "authors": authors,
-        "year": year,
-        "abstract": abstract[:500] + ("..." if len(abstract or "") > 500 else ""),
-        "citations": citations,
-        "url": doi or url,
+        "year": paper.get("year", "연도 미상"),
+        "abstract": abstract[:500] + ("..." if len(abstract) > 500 else ""),
+        "citations": paper.get("citationCount", 0),
+        "url": doi_url or paper.get("url", ""),
+        "source": "Semantic Scholar",
     }
