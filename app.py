@@ -12,14 +12,21 @@ from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
+from style_analyzer import (
+    load_my_papers, build_style_prompt, save_style_profile,
+    load_style_profile, build_style_instruction
+)
 
 load_dotenv()
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
-PDF_DIR = Path(DATA_DIR) / "pdfs"
-DB_DIR = Path(DATA_DIR) / "reference_db"
-PDF_DIR.mkdir(parents=True, exist_ok=True)
-DB_DIR.mkdir(parents=True, exist_ok=True)
+PDF_DIR        = Path(DATA_DIR) / "pdfs"
+DB_DIR         = Path(DATA_DIR) / "reference_db"
+MY_PAPERS_DIR  = Path(DATA_DIR) / "my_papers"
+STYLE_PROFILE  = Path(DATA_DIR) / "style_profile.json"
+
+for d in [PDF_DIR, DB_DIR, MY_PAPERS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
 
 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
@@ -70,16 +77,17 @@ def chat_with_claude(messages):
     return response.content[0].text
 
 
-def write_paragraph_with_refs(topic, style, results):
+def write_paragraph_with_refs(topic, style, results, style_profile=None):
     ref_texts = "\n\n".join(
         f"[출처 {i+1}: {r['source']}]\n{r['text']}"
         for i, r in enumerate(results)
     )
     source_list = "\n".join(f"- {r['source']}" for r in results)
+    style_section = build_style_instruction(style_profile) if style_profile else ""
     prompt = f"""아래 참고문헌 내용들을 바탕으로 "{topic}" 주제에 대한 학술적 단락을 작성해주세요.
 
 작성 유형: {style}
-
+{style_section}
 [참고문헌 내용]
 {ref_texts}
 
@@ -88,7 +96,6 @@ def write_paragraph_with_refs(topic, style, results):
 2. 인용 시 괄호 안에 출처 파일명을 표시하세요. 예: (Smith et al., 2023)
 3. 단락은 3~5문장으로 작성하세요.
 4. 단락 아래에 "**참고문헌:**" 항목으로 사용한 출처 목록을 나열하세요.
-5. 교육공학 분야의 학술적 문체를 사용하세요.
 
 사용된 출처:
 {source_list}
@@ -102,13 +109,14 @@ def write_paragraph_with_refs(topic, style, results):
     return response.content[0].text
 
 
-def insert_citations(draft_text, search_results):
+def insert_citations(draft_text, search_results, style_profile=None):
     ref_texts = "\n\n".join(
         f"[논문 {i+1}: {r['source']}]\n{r['text']}"
         for i, r in enumerate(search_results)
     )
+    style_section = build_style_instruction(style_profile) if style_profile else ""
     prompt = f"""다음 초안 텍스트에서 인용이 필요한 주장이나 사실을 찾아 참고문헌을 자동으로 삽입해주세요.
-
+{style_section}
 [초안 텍스트]
 {draft_text}
 
@@ -294,6 +302,53 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+
+    # ── 내 논문 스타일 ──────────────────────────────────────────
+    st.subheader("🖊️ 내 논문 스타일")
+    profile = load_style_profile(str(STYLE_PROFILE))
+    if profile:
+        st.success("✅ 스타일 프로필 분석 완료")
+        with st.expander("프로필 내용 보기"):
+            st.markdown(profile)
+    else:
+        st.info("내 논문을 업로드하면 문체·관점을 학습해요.")
+
+    my_papers_upload = st.file_uploader(
+        "내 논문 PDF 업로드",
+        type="pdf",
+        accept_multiple_files=True,
+        key="my_papers_uploader",
+    )
+    if my_papers_upload:
+        for uf in my_papers_upload:
+            dest = MY_PAPERS_DIR / uf.name
+            if not dest.exists():
+                dest.write_bytes(uf.read())
+        st.info(f"{len(my_papers_upload)}개 저장됨")
+
+    my_pdfs = list(MY_PAPERS_DIR.glob("*.pdf"))
+    if my_pdfs:
+        st.caption(f"업로드된 내 논문: {len(my_pdfs)}개")
+        if st.button("🔍 스타일 분석 시작", use_container_width=True):
+            with st.spinner("논문 읽는 중..."):
+                papers = load_my_papers(str(MY_PAPERS_DIR))
+            if not papers:
+                st.error("텍스트를 추출할 수 없어요.")
+            else:
+                prompt = build_style_prompt(papers)
+                with st.spinner("Claude가 문체 분석 중... (1~2분)"):
+                    result = client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=3000,
+                        system=SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    analysis = result.content[0].text
+                save_style_profile(analysis, str(STYLE_PROFILE))
+                st.success("✅ 스타일 분석 완료!")
+                st.rerun()
+
+    st.divider()
     if st.button("대화 초기화"):
         st.session_state.messages = []
         st.rerun()
@@ -317,6 +372,14 @@ if mode == "📚 단락 작성 (RAG)":
         with col2:
             top_k = st.slider("참고할 논문 수", 3, 8, 5)
 
+        rag_style_profile = load_style_profile(str(STYLE_PROFILE))
+        use_my_style_rag = st.checkbox(
+            "🖊️ 내 스타일로 작성",
+            value=bool(rag_style_profile),
+            disabled=not rag_style_profile,
+            help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not rag_style_profile else "내 문체·관점을 반영해 작성합니다.",
+        )
+
         if st.button("✍️ 단락 작성", use_container_width=True, disabled=not topic):
             with st.spinner("관련 문헌 검색 중..."):
                 results = library.search(topic, top_k=top_k)
@@ -331,7 +394,8 @@ if mode == "📚 단락 작성 (RAG)":
                         st.divider()
 
                 with st.spinner("단락 작성 중..."):
-                    paragraph = write_paragraph_with_refs(topic, style, results)
+                    applied_profile = rag_style_profile if use_my_style_rag else None
+                    paragraph = write_paragraph_with_refs(topic, style, results, applied_profile)
 
                 st.markdown("### 작성된 단락")
                 st.markdown(paragraph)
@@ -355,6 +419,14 @@ elif mode == "✒️ 인용 자동 삽입":
         draft = st.text_area("초안 텍스트를 입력하세요", height=250,
                              placeholder="인용을 넣고 싶은 글을 여기에 붙여넣으세요...")
         top_k = st.slider("참고할 논문 수", 3, 10, 5)
+
+        cite_style_profile = load_style_profile(str(STYLE_PROFILE))
+        use_my_style_cite = st.checkbox(
+            "🖊️ 내 스타일 유지",
+            value=bool(cite_style_profile),
+            disabled=not cite_style_profile,
+            help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not cite_style_profile else "인용 삽입 후에도 내 문체를 유지합니다.",
+        )
 
         if st.button("✒️ 인용 삽입", use_container_width=True, disabled=not draft):
             results = []
@@ -401,7 +473,8 @@ elif mode == "✒️ 인용 자동 삽입":
                         st.divider()
 
                 with st.spinner("인용 삽입 중..."):
-                    result_text = insert_citations(draft, results)
+                    applied_cite_profile = cite_style_profile if use_my_style_cite else None
+                    result_text = insert_citations(draft, results, applied_cite_profile)
 
                 st.markdown("### 인용이 삽입된 텍스트")
                 st.markdown(result_text)
