@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 from rag import ReferenceLibrary
 from scholar import search_papers, format_paper
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_search(query, limit):
+    return search_papers(query, limit=limit)
+
 load_dotenv()
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
@@ -271,7 +275,7 @@ elif mode == "🔍 문헌 추천":
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
         with st.spinner("Semantic Scholar 검색 중..."):
             try:
-                raw_papers = search_papers(topic, limit=num_results)
+                raw_papers = cached_search(topic, num_results)
                 papers = [format_paper(p) for p in raw_papers]
             except Exception as e:
                 st.error(f"❌ {e}")

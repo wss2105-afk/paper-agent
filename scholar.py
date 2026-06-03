@@ -1,42 +1,59 @@
+import os
+import time
 import requests
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,authors,year,abstract,citationCount,url,externalIds"
-HEADERS = {
-    "User-Agent": "PaperAgent/1.0 (educational research tool)",
-    "Accept": "application/json",
-}
 
 
-def search_papers(query, limit=10):
+def _get_headers():
+    headers = {
+        "User-Agent": "PaperAgent/1.0 (educational research tool)",
+        "Accept": "application/json",
+    }
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
+
+
+def search_papers(query, limit=10, retries=2):
     params = {
         "query": query,
         "fields": FIELDS,
         "limit": limit,
     }
-    try:
-        response = requests.get(
-            SEMANTIC_SCHOLAR_URL,
-            params=params,
-            headers=HEADERS,
-            timeout=15,
-        )
-        if response.status_code == 429:
-            raise Exception("요청이 너무 많아요. 잠시 후 다시 시도해주세요. (API 속도 제한)")
-        if response.status_code == 400:
-            raise Exception("검색어를 확인해주세요. 영어 키워드를 권장해요.")
-        response.raise_for_status()
-        data = response.json()
-        papers = data.get("data", [])
-        if not papers:
-            raise Exception("검색 결과가 없어요. 다른 키워드로 시도해보세요.")
-        return papers
-    except requests.exceptions.Timeout:
-        raise Exception("검색 시간이 초과됐어요 (15초). 다시 시도해주세요.")
-    except requests.exceptions.ConnectionError:
-        raise Exception("네트워크 연결 오류가 발생했어요. 잠시 후 다시 시도해주세요.")
-    except requests.exceptions.RequestException as e:
-        raise Exception(f"검색 중 오류 발생: {e}")
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(
+                SEMANTIC_SCHOLAR_URL,
+                params=params,
+                headers=_get_headers(),
+                timeout=15,
+            )
+            if response.status_code == 429:
+                if attempt < retries:
+                    time.sleep(3)
+                    continue
+                raise Exception("API 요청 한도 초과예요. 잠시 후(1~2분) 다시 시도해주세요.")
+            if response.status_code == 400:
+                raise Exception("검색어를 확인해주세요. 영어 키워드를 권장해요.")
+            response.raise_for_status()
+            data = response.json()
+            papers = data.get("data", [])
+            if not papers:
+                raise Exception("검색 결과가 없어요. 다른 키워드로 시도해보세요.")
+            return papers
+        except requests.exceptions.Timeout:
+            if attempt < retries:
+                time.sleep(2)
+                continue
+            raise Exception("검색 시간이 초과됐어요. 다시 시도해주세요.")
+        except requests.exceptions.ConnectionError:
+            raise Exception("네트워크 연결 오류가 발생했어요. 잠시 후 다시 시도해주세요.")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"검색 중 오류 발생: {e}")
+    raise Exception("검색에 실패했어요. 잠시 후 다시 시도해주세요.")
 
 
 def format_paper(paper):
