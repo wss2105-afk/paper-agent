@@ -2,6 +2,10 @@ import requests
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,authors,year,abstract,citationCount,url,externalIds"
+HEADERS = {
+    "User-Agent": "PaperAgent/1.0 (educational research tool)",
+    "Accept": "application/json",
+}
 
 
 def search_papers(query, limit=10):
@@ -11,12 +15,26 @@ def search_papers(query, limit=10):
         "limit": limit,
     }
     try:
-        response = requests.get(SEMANTIC_SCHOLAR_URL, params=params, timeout=10)
+        response = requests.get(
+            SEMANTIC_SCHOLAR_URL,
+            params=params,
+            headers=HEADERS,
+            timeout=15,
+        )
+        if response.status_code == 429:
+            raise Exception("요청이 너무 많아요. 잠시 후 다시 시도해주세요. (API 속도 제한)")
+        if response.status_code == 400:
+            raise Exception("검색어를 확인해주세요. 영어 키워드를 권장해요.")
         response.raise_for_status()
         data = response.json()
-        return data.get("data", [])
+        papers = data.get("data", [])
+        if not papers:
+            raise Exception("검색 결과가 없어요. 다른 키워드로 시도해보세요.")
+        return papers
     except requests.exceptions.Timeout:
-        raise Exception("검색 시간이 초과됐어요. 다시 시도해주세요.")
+        raise Exception("검색 시간이 초과됐어요 (15초). 다시 시도해주세요.")
+    except requests.exceptions.ConnectionError:
+        raise Exception("네트워크 연결 오류가 발생했어요. 잠시 후 다시 시도해주세요.")
     except requests.exceptions.RequestException as e:
         raise Exception(f"검색 중 오류 발생: {e}")
 

@@ -274,7 +274,8 @@ elif mode == "🔍 문헌 추천":
                 raw_papers = search_papers(topic, limit=num_results)
                 papers = [format_paper(p) for p in raw_papers]
             except Exception as e:
-                st.error(str(e))
+                st.error(f"❌ {e}")
+                st.info("💡 팁: 키워드를 영어로 입력하면 결과가 더 잘 나와요.\n예) blended learning, flipped classroom, AI tutoring")
                 papers = []
 
         if papers:
