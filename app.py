@@ -179,6 +179,12 @@ details summary p { font-size: 0.9rem !important; font-weight: 500 !important; }
 .paper-title { font-size: 0.92rem !important; font-weight: 600 !important; margin-bottom: 2px !important; line-height: 1.4 !important; }
 .paper-meta  { font-size: 0.80rem !important; color: gray !important; margin: 0 !important; }
 .paper-abs   { font-size: 0.85rem !important; margin-top: 4px !important; }
+/* 추천 분석 출력 영역 헤딩 크기 축소 */
+[data-testid="stMarkdownContainer"] h1 { font-size: 1.1rem !important; }
+[data-testid="stMarkdownContainer"] h2 { font-size: 1.0rem !important; }
+[data-testid="stMarkdownContainer"] h3 { font-size: 0.95rem !important; }
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li { font-size: 0.88rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -499,7 +505,7 @@ elif mode == "🔍 문헌 추천":
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
         with st.spinner(f"{source} 검색 중..."):
             try:
-                papers = cached_search(topic, num_results, source, version=4)
+                papers = cached_search(topic, num_results, source, version=5)
             except Exception as e:
                 st.error(f"❌ {e}")
                 st.info("💡 영어 키워드로 입력해보세요.\n예) blended learning, flipped classroom")
@@ -508,7 +514,7 @@ elif mode == "🔍 문헌 추천":
         if papers:
             paper_list = "\n\n".join(
                 f"[{i+1}] {p['title']}\n"
-                f"저자: {p['authors']} ({p['year']}) | 출처: {p.get('source','')}\n"
+                f"저자: {p['authors']} ({p['year']}) | 학술지: {p.get('journal','') or p.get('source','')}\n"
                 f"초록: {p['abstract']}"
                 for i, p in enumerate(papers)
             )
@@ -520,7 +526,8 @@ elif mode == "🔍 문헌 추천":
 [논문 목록]
 {paper_list}
 
-각 논문에 대해:
+각 논문에 대해 아래 형식으로 작성해주세요:
+**[번호] 논문 제목** | 저자 (연도) | 학술지명
 1. 핵심 내용 한 줄 요약
 2. 연구에서 어떻게 활용할 수 있는지
 3. 추천 여부 (⭐ 강추 / 👍 참고 / 💡 선택적)
