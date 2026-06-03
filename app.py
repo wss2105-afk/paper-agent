@@ -162,6 +162,11 @@ def export_buttons(content, topic, key_prefix):
 
 # ── 페이지 설정 ───────────────────────────────────────────────
 st.set_page_config(page_title="논문 작성 도우미", page_icon="📝", layout="wide")
+st.markdown("""
+<style>
+details summary p { font-size: 0.9rem !important; font-weight: 500 !important; }
+</style>
+""", unsafe_allow_html=True)
 st.title("📝 논문 작성 도우미")
 st.caption("교육공학 논문 작성을 위한 AI 에이전트")
 
@@ -394,13 +399,20 @@ elif mode == "🔍 문헌 추천":
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
             for i, p in enumerate(papers):
-                with st.expander(f"{i+1}. [{p.get('source','')}] {p['title']} ({p['year']})"):
-                    st.markdown(f"**저자:** {p['authors']}")
-                    if p['citations'] != "N/A":
-                        st.markdown(f"**인용 횟수:** {p['citations']}회")
+                label = f"{i+1}. {p['title']} ({p['year']})"
+                with st.expander(label):
+                    col_a, col_b = st.columns([3, 1])
+                    with col_a:
+                        st.markdown(f"**저자:** {p['authors']}")
+                        if p.get("journal"):
+                            st.markdown(f"**학술지:** {p['journal']}")
+                        st.markdown(f"**출처:** {p.get('source', '')}")
+                    with col_b:
+                        if p['citations'] != "N/A":
+                            st.metric("인용 횟수", f"{p['citations']}회")
                     st.markdown(f"**초록:** {p['abstract']}")
                     if p.get("url"):
-                        st.markdown(f"**링크:** [{p['url']}]({p['url']})")
+                        st.markdown(f"🔗 [논문 링크]({p['url']})")
 
 # ── 데이터 분석 설계 ──────────────────────────────────────────
 elif mode == "📊 데이터 분석 설계":

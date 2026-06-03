@@ -4,7 +4,7 @@ import requests
 import arxiv as arxiv_lib
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
-FIELDS = "title,authors,year,abstract,citationCount,url,externalIds"
+FIELDS = "title,authors,year,abstract,citationCount,url,externalIds,venue,journal"
 
 
 def _get_headers():
@@ -105,6 +105,18 @@ def format_paper(paper):
     abstract = paper.get("abstract") or "초록 없음"
     ext_ids = paper.get("externalIds") or {}
     doi_url = f"https://doi.org/{ext_ids['DOI']}" if ext_ids.get("DOI") else ""
+
+    # 학술지명: journal.name 또는 venue 사용
+    journal_info = paper.get("journal") or {}
+    journal_name = journal_info.get("name") or paper.get("venue") or ""
+    journal_vol = journal_info.get("volume") or ""
+    journal_pages = journal_info.get("pages") or ""
+    journal_display = journal_name
+    if journal_vol:
+        journal_display += f", {journal_vol}"
+    if journal_pages:
+        journal_display += f", pp.{journal_pages}"
+
     return {
         "title": paper.get("title", "제목 없음"),
         "authors": authors,
@@ -112,5 +124,6 @@ def format_paper(paper):
         "abstract": abstract[:500] + ("..." if len(abstract) > 500 else ""),
         "citations": paper.get("citationCount", 0),
         "url": doi_url or paper.get("url", ""),
+        "journal": journal_display,
         "source": "Semantic Scholar",
     }
