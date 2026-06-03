@@ -1,3 +1,4 @@
+import html as _html
 import os
 import tempfile
 from pathlib import Path
@@ -53,7 +54,7 @@ def get_library():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit, source, version=4):
+def cached_search(query, limit, source, version=5):
     return search_papers(query, limit=limit, source=source)
 
 
@@ -537,31 +538,35 @@ elif mode == "🔍 문헌 추천":
             st.divider()
             st.markdown("### 📄 검색된 논문 전체 목록")
 
-            # 첫 번째 논문의 raw 데이터 확인용 (디버그)
-            if papers:
-                with st.expander("🔧 디버그: 첫 번째 논문 raw 데이터", expanded=False):
-                    st.json(papers[0])
-
             for i, p in enumerate(papers):
                 journal = p.get("journal") or ""
-                source  = p.get("source", "")
-                venue_label = journal if journal else f"({source} — 학술지 정보 없음)"
+                paper_src = p.get("source", "")
+                venue_label = journal if journal else paper_src
 
                 citations = p.get("citations")
                 cite_str = f"인용 {citations}회" if citations not in ("N/A", 0, None, "") else ""
 
-                meta_parts = [p["authors"], str(p["year"]), venue_label]
+                title_s    = _html.escape(str(p.get("title", "")))
+                authors_s  = _html.escape(str(p.get("authors", "")))
+                venue_s    = _html.escape(venue_label)
+                abstract_s = _html.escape((p["abstract"][:200].rsplit(" ", 1)[0] + "..."))
+
+                meta_parts = [authors_s, str(p["year"]), venue_s]
                 if cite_str:
                     meta_parts.append(cite_str)
                 meta_line = " · ".join(meta_parts)
 
-                abstract_short = p["abstract"][:200].rsplit(" ", 1)[0] + "..."
-                link_html = f' <a href="{p["url"]}" target="_blank" style="font-size:0.8rem">🔗</a>' if p.get("url") else ""
+                url = p.get("url", "")
+                link_tag = (
+                    f' <a href="{url}" target="_blank" style="font-size:0.75rem;text-decoration:none">🔗</a>'
+                    if url else ""
+                )
 
                 st.markdown(
-                    f"<small><b>{i+1}. {p['title']}</b>{link_html}</small><br>"
-                    f"<small style='color:gray'>{meta_line}</small><br>"
-                    f"<small>{abstract_short}</small>",
+                    f'<p style="font-size:0.85rem;font-weight:600;margin:0 0 2px 0;line-height:1.4">'
+                    f'{i+1}. {title_s}{link_tag}</p>'
+                    f'<p style="font-size:0.78rem;color:#888;margin:0">{meta_line}</p>'
+                    f'<p style="font-size:0.82rem;margin:4px 0 0 0">{abstract_s}</p>',
                     unsafe_allow_html=True,
                 )
                 st.divider()
