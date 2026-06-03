@@ -546,27 +546,29 @@ elif mode == "🔍 문헌 추천":
                 citations = p.get("citations")
                 cite_str = f"인용 {citations}회" if citations not in ("N/A", 0, None, "") else ""
 
-                title_s    = _html.escape(str(p.get("title", "")))
-                authors_s  = _html.escape(str(p.get("authors", "")))
-                venue_s    = _html.escape(venue_label)
+                title_s   = _html.escape(str(p.get("title", "")))
+                authors_s = _html.escape(str(p.get("authors", "")))
+                venue_s   = _html.escape(venue_label)
                 abstract_s = _html.escape((p["abstract"][:200].rsplit(" ", 1)[0] + "..."))
 
-                meta_parts = [authors_s, str(p["year"]), venue_s]
+                author_line = f"{authors_s} ({p['year']})"
+                source_parts = [venue_s]
                 if cite_str:
-                    meta_parts.append(cite_str)
-                meta_line = " · ".join(meta_parts)
+                    source_parts.append(cite_str)
+                source_line = " · ".join(source_parts)
 
                 url = p.get("url", "")
                 link_tag = (
-                    f' <a href="{url}" target="_blank" style="font-size:0.75rem;text-decoration:none">🔗</a>'
+                    f' <a href="{url}" target="_blank" style="font-size:0.72rem;text-decoration:none">🔗</a>'
                     if url else ""
                 )
 
                 st.markdown(
-                    f'<p style="font-size:0.85rem;font-weight:600;margin:0 0 2px 0;line-height:1.4">'
+                    f'<p style="font-size:0.78rem;font-weight:600;margin:0 0 1px 0;line-height:1.4">'
                     f'{i+1}. {title_s}{link_tag}</p>'
-                    f'<p style="font-size:0.78rem;color:#888;margin:0">{meta_line}</p>'
-                    f'<p style="font-size:0.82rem;margin:4px 0 0 0">{abstract_s}</p>',
+                    f'<p style="font-size:0.82rem;color:#777;margin:0">{author_line}</p>'
+                    f'<p style="font-size:0.82rem;color:#555;margin:0 0 3px 0">출처: {source_line}</p>'
+                    f'<p style="font-size:0.84rem;margin:2px 0 0 0">{abstract_s}</p>',
                     unsafe_allow_html=True,
                 )
                 st.divider()
