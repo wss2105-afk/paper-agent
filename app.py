@@ -8,6 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from rag import ReferenceLibrary
+from scholar import search_papers, format_paper
 
 load_dotenv()
 
@@ -105,8 +106,8 @@ with st.sidebar:
     st.header("기능 선택")
     mode = st.radio(
         "원하는 작업을 선택하세요",
-        ["💬 자유 질문", "📚 단락 작성 (RAG)", "📄 PDF 분석",
-         "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
+        ["💬 자유 질문", "📚 단락 작성 (RAG)", "🔍 문헌 추천",
+         "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
     )
 
     st.divider()
@@ -251,6 +252,70 @@ if mode == "📚 단락 작성 (RAG)":
                     mime="text/plain",
                 )
 
+# ── 문헌 추천 ────────────────────────────────────────────────
+elif mode == "🔍 문헌 추천":
+    st.subheader("🔍 Semantic Scholar 문헌 추천")
+    st.caption("연구 주제를 입력하면 관련 논문을 검색하고 Claude가 추천해드려요.")
+
+    topic = st.text_input(
+        "연구 주제 또는 키워드 입력",
+        placeholder="예: blended learning student motivation",
+        help="영어 키워드로 입력하면 검색 결과가 더 풍부해요",
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        num_results = st.slider("검색 논문 수", 5, 20, 10)
+    with col2:
+        my_topic = st.text_input("내 연구 주제 (선택)", placeholder="Claude 추천 기준으로 사용")
+
+    if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
+        with st.spinner("Semantic Scholar 검색 중..."):
+            try:
+                raw_papers = search_papers(topic, limit=num_results)
+                papers = [format_paper(p) for p in raw_papers]
+            except Exception as e:
+                st.error(str(e))
+                papers = []
+
+        if papers:
+            # Claude에게 추천 분석 요청
+            paper_list = "\n\n".join(
+                f"[{i+1}] {p['title']}\n"
+                f"저자: {p['authors']} ({p['year']}) | 인용: {p['citations']}회\n"
+                f"초록: {p['abstract']}"
+                for i, p in enumerate(papers)
+            )
+            research_context = f"\n내 연구 주제: {my_topic}" if my_topic else ""
+            prompt = f"""다음 논문 목록을 분석하여 연구에 유용한 순서로 추천해주세요.{research_context}
+
+검색 키워드: {topic}
+
+[논문 목록]
+{paper_list}
+
+각 논문에 대해:
+1. 핵심 내용 한 줄 요약
+2. 연구에서 어떻게 활용할 수 있는지
+3. 추천 여부 (⭐ 강추 / 👍 참고 / 💡 선택적)
+
+마지막에 가장 중요한 논문 3편을 선정하고 이유를 설명해주세요."""
+
+            with st.spinner("Claude가 논문 분석 중..."):
+                recommendation = chat_with_claude([{"role": "user", "content": prompt}])
+
+            st.markdown("### Claude 추천 분석")
+            st.markdown(recommendation)
+
+            st.divider()
+            st.markdown("### 📄 검색된 논문 전체 목록")
+            for i, p in enumerate(papers):
+                with st.expander(f"{i+1}. {p['title']} ({p['year']})"):
+                    st.markdown(f"**저자:** {p['authors']}")
+                    st.markdown(f"**인용 횟수:** {p['citations']}회")
+                    st.markdown(f"**초록:** {p['abstract']}")
+                    if p["url"]:
+                        st.markdown(f"**링크:** [{p['url']}]({p['url']})")
+
 # ── PDF 분석 ─────────────────────────────────────────────────
 elif mode == "📄 PDF 분석":
     uploaded_file = st.file_uploader("분석할 논문 PDF를 업로드하세요", type="pdf")
@@ -303,7 +368,7 @@ elif mode == "🔖 참고문헌 변환":
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
-if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"]:
+if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환", "🔍 문헌 추천"]:
     for msg in st.session_state.messages:
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":

@@ -3,3 +3,4 @@ streamlit
 pdfplumber
 python-dotenv
 rank-bm25
+requests
