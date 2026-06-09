@@ -123,14 +123,54 @@ SJR_LOOKUP: dict[str, tuple[str, str]] = {
     k.lower().strip(): v for k, v in _RAW.items()
 }
 
+# Common Semantic Scholar abbreviations → canonical key in SJR_LOOKUP.
+_ABBREV: dict[str, str] = {
+    "comput. educ.": "computers & education",
+    "comput. hum. behav.": "computers in human behavior",
+    "br. j. educ. technol.": "british journal of educational technology",
+    "educ. technol. res. dev.": "educational technology research and development",
+    "j. comput. assist. learn.": "journal of computer assisted learning",
+    "internet high. educ.": "internet and higher education",
+    "learn. instr.": "learning and instruction",
+    "instr. sci.": "instructional science",
+    "j. educ. psychol.": "journal of educational psychology",
+    "contemp. educ. psychol.": "contemporary educational psychology",
+    "educ. psychol. rev.": "educational psychology review",
+    "educ. res. rev.": "educational research review",
+    "rev. educ. res.": "review of educational research",
+    "teach. teach. educ.": "teaching and teacher education",
+    "behav. inf. technol.": "behaviour & information technology",
+    "j. res. technol. educ.": "journal of research on technology in education",
+    "educ. inf. technol.": "education and information technologies",
+    "j. sci. educ. technol.": "journal of science education and technology",
+    "comput. educ. open": "computers & education open",
+}
+
 _QUARTILE_COLOR = {"Q1": "#1a7f37", "Q2": "#0969da", "Q3": "#9a6700", "Q4": "#cf222e"}
+
+
+def _normalize(journal_name: str) -> str:
+    """Strip volume/page/subtitle noise that Semantic Scholar appends to venue names."""
+    n = journal_name.lower().strip()
+    # Cut off ", Vol.X" / ", pp.Y" suffixes added by format_paper(), and " : subtitle".
+    for sep in (", vol", ", pp", " : ", ": ", " - vol"):
+        idx = n.find(sep)
+        if idx != -1:
+            n = n[:idx]
+    return n.strip().rstrip(",.").strip()
+
+
+# Normalize abbreviation keys the same way lookups are normalized (drops trailing ".").
+_ABBREV_LOOKUP: dict[str, str] = {_normalize(k): v for k, v in _ABBREV.items()}
 
 
 def get_quartile(journal_name: str) -> tuple[str, str] | None:
     """Return (quartile, subject) or None if not found."""
     if not journal_name:
         return None
-    return SJR_LOOKUP.get(journal_name.lower().strip())
+    key = _normalize(journal_name)
+    key = _ABBREV_LOOKUP.get(key, key)
+    return SJR_LOOKUP.get(key)
 
 
 def quartile_badge(journal_name: str) -> str:

@@ -1,0 +1,72 @@
+================================================================
+ paper-agent 작업 로그 (WORKLOG)
+================================================================
+이 파일은 Claude가 작업할 때마다 그때그때 갱신합니다.
+세션을 새로 시작하면 이 파일을 먼저 읽고 이어서 작업합니다.
+================================================================
+
+[ 프로젝트 기본 정보 ]
+- 위치: C:\Users\신원석\paper-agent
+- 목적: 교육공학 논문 작성을 돕는 AI 에이전트
+- 기술 스택: Python, Streamlit, Claude API (claude-sonnet-4-6)
+- GitHub: https://github.com/wss2105-afk/paper-agent
+- 배포 주소: https://paper-agent-production-6189.up.railway.app
+- 배포: Railway (Volume /data 마운트 → PDF 영구 저장)
+
+[ 주요 파일 ]
+- app.py            : Streamlit 메인 앱 (7개 기능 모드)
+- rag.py            : PDF 기반 인용 단락 작성 (BM25)
+- scholar.py        : Semantic Scholar 문헌 검색
+- data_analyzer.py  : 데이터 분석
+- style_analyzer.py : 글쓰기 스타일 분석
+- sjr_data.py       : SJR(저널 등급) 데이터
+- export.py         : 내보내기 (docx 등)
+- progress.md       : 기존 진행 메모(참고용)
+
+[ 기능 모드 ]
+1. 자유 질문        - Claude 자유 대화
+2. 단락 작성(RAG)   - 업로드 PDF 기반 인용 단락
+3. 문헌 추천        - Semantic Scholar + SSCI 우선 + SJR 등급
+4. PDF 분석         - 논문 PDF 요약/분석
+5. 논문 구조 설계   - 주제 → 구조 제안
+6. 글쓰기 교정      - 학술체 변환
+7. 참고문헌 변환    - APA 등 인용 형식
+
+================================================================
+ 작업 히스토리 (최신이 위)
+================================================================
+
+---- 2026-06-09 ----
+- [문헌 추천 기능 실사용 테스트 완료]
+  · 검색(Semantic Scholar) / SSCI 인용순 정렬 / Claude 분석 → 모두 정상 동작 확인.
+  · ★버그 발견 & 수정★ : SJR 등급 배지가 전혀 안 붙던 문제(매칭 0/8).
+    원인 3가지 — (1) 학술지명에 ", Vol.X, pp.Y" 접미사가 붙어 정확매칭 실패
+                  (2) " : 부제" 가 붙어 매칭 실패
+                  (3) Semantic Scholar 약어("Comput. Educ.")가 표에 없음
+    수정 파일: sjr_data.py
+      - _normalize(): 권/페이지/부제 노이즈 제거 후 매칭
+      - _ABBREV/_ABBREV_LOOKUP: 흔한 ed-tech 학술지 약어 20여 개 별칭 추가
+    결과: 실제 결과셋 기준 SJR 매칭 0/8 → 3/8 (정통 Q1 저널 모두 매칭, 오탐 0).
+  · 참고: 이 PC(사용자 폴더 신원석)에는 패키지가 없어 테스트용으로
+          requests/python-dotenv/anthropic/arxiv 를 base python(3.14)에 설치함.
+          (streamlit 등 전체 의존성은 아직 미설치 — 로컬 풀 실행하려면 추가 설치 필요)
+- 미커밋 변경: sjr_data.py(수정), WORKLOG.txt(신규). 아직 push 안 함(push 시 Railway 자동 재배포됨).
+- 최근 커밋:
+    75776c8 Add SJR quartile badges to paper list
+    6ee5d30 Add SSCI priority mode to literature recommendation
+    36f48be Recommendation: smaller headings, add journal to prompt
+
+================================================================
+ 다음 할 일 (TODO)
+================================================================
+- [x] 문헌 추천 기능 실사용 테스트 (2026-06-09 완료, SJR 배지 버그 수정)
+- [ ] sjr_data.py 변경분 커밋 & push 여부 결정 (push=Railway 재배포)
+- [ ] 단락 작성(RAG) 품질/프롬프트 개선
+- [ ] (사용자 지시 대기 중)
+
+================================================================
+ 메모 / 주의사항
+================================================================
+- .env 에 API 키 있음 (git 추적 안 됨 / 절대 커밋·노출 금지)
+- 배포는 Railway 자동: master에 push 하면 재배포됨
+================================================================
