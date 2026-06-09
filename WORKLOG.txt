@@ -37,6 +37,12 @@
 ================================================================
 
 ---- 2026-06-09 (추가 세션) ----
+- [글쓰기 교정 모드에 내 문체 프로필 적용 추가]
+  · 기존: 스타일 프로필은 단락 작성(RAG)/인용 삽입 2개 모드에서만 적용됐음.
+  · 추가: 글쓰기 교정 모드(app.py:743~)에 "🖊️ 내 문체 반영" 체크박스 추가.
+    프로필 있으면 기본 ON, build_style_instruction을 교정 프롬프트에 주입.
+  · 참고: 적용에는 style_profile.json만 필요. 원본 PDF(/data/my_papers)는
+    재분석용으로만 보관됨(적용 시점엔 미사용). 자동삭제 여부는 추후 결정.
 - [로컬 전체 의존성 설치 완료]
   · requirements.txt 7개 미설치분 설치: streamlit, pdfplumber, rank-bm25,
     python-docx, pandas, openpyxl, pyreadstat (Python 3.14.5 base).

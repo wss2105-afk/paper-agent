@@ -746,8 +746,21 @@ elif mode == "✍️ 글쓰기 교정":
     text_input = st.text_area("교정할 문장/문단을 입력하세요", height=200)
     correction_type = st.selectbox("교정 유형",
         ["학술체로 변환", "문장 명확성 개선", "논리 흐름 개선", "전체 교정"])
+
+    corr_style_profile = load_style_profile(str(STYLE_PROFILE))
+    use_my_style_corr = st.checkbox(
+        "🖊️ 내 문체 반영",
+        value=bool(corr_style_profile),
+        disabled=not corr_style_profile,
+        help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not corr_style_profile else "교정할 때 내 고유 문체·어휘를 유지합니다.",
+    )
+
     if st.button("교정 시작") and text_input:
-        prompt = f"다음 글을 '{correction_type}' 관점에서 교정해주세요. 원문과 수정본을 나란히 보여주고, 수정 이유도 설명해주세요:\n\n{text_input}"
+        style_section = build_style_instruction(corr_style_profile) if use_my_style_corr else ""
+        prompt = f"""다음 글을 '{correction_type}' 관점에서 교정해주세요. 원문과 수정본을 나란히 보여주고, 수정 이유도 설명해주세요.
+{style_section}
+[원문]
+{text_input}"""
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 참고문헌 변환 ─────────────────────────────────────────────
