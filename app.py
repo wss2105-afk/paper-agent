@@ -69,14 +69,17 @@ def extract_pdf_text(file_path):
     return text
 
 
-def chat_with_claude(messages):
+def chat_with_claude(messages, return_truncated=False):
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=8192,
         system=SYSTEM_PROMPT,
         messages=messages,
     )
-    return response.content[0].text
+    text = response.content[0].text
+    if return_truncated:
+        return text, response.stop_reason == "max_tokens"
+    return text
 
 
 def write_paragraph_with_refs(topic, style, results, style_profile=None):
@@ -572,10 +575,14 @@ Teaching and Teacher Education, Educational Research Review"""
 마지막에 가장 중요한 논문 3편을 선정하고 이유를 설명해주세요."""
 
             with st.spinner("Claude가 논문 분석 중..."):
-                recommendation = chat_with_claude([{"role": "user", "content": prompt}])
+                recommendation, truncated = chat_with_claude(
+                    [{"role": "user", "content": prompt}], return_truncated=True
+                )
 
             st.markdown("### Claude 추천 분석")
             st.markdown(recommendation)
+            if truncated:
+                st.warning("⚠️ 분석이 길어 출력이 일부 잘렸어요. 검색 논문 수를 줄이면 모든 논문이 끝까지 표시됩니다. (아래 '검색된 논문 전체 목록'에는 모든 논문이 나와요.)")
             st.download_button("📋 추천 결과 저장 (.txt)", recommendation,
                                file_name="문헌추천결과.txt", mime="text/plain")
 
@@ -765,8 +772,12 @@ if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설�
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
         with st.chat_message("assistant"):
             with st.spinner("답변 생성 중..."):
-                response = chat_with_claude(st.session_state.messages)
+                response, truncated = chat_with_claude(
+                    st.session_state.messages, return_truncated=True
+                )
                 st.write(response)
+                if truncated:
+                    st.warning("⚠️ 답변이 길어 출력이 일부 잘렸어요. 항목 수를 나눠서 다시 시도하면 전부 표시됩니다.")
         st.session_state.messages.append({"role": "assistant", "content": response})
 
     if mode == "💬 자유 질문":

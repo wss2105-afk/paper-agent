@@ -36,6 +36,21 @@
  작업 히스토리 (최신이 위)
 ================================================================
 
+---- 2026-06-09 (추가 세션) ----
+- [로컬 전체 의존성 설치 완료]
+  · requirements.txt 7개 미설치분 설치: streamlit, pdfplumber, rank-bm25,
+    python-docx, pandas, openpyxl, pyreadstat (Python 3.14.5 base).
+  · 11개 패키지 전부 import 검증 통과("ALL IMPORTS OK"). 이제 로컬 풀 실행 가능.
+- [★버그 수정★ 참고문헌이 전부 안 적히는 문제]
+  · 증상: 문헌 추천/참고문헌 변환에서 결과가 중간에 잘려 일부만 표시.
+  · 원인: chat_with_claude()의 max_tokens=4096 한도 초과로 응답 truncation.
+    (문헌 추천은 논문 최대 20편 각각 분석 → 4096토큰 쉽게 초과)
+  · 수정(app.py):
+      (1) chat_with_claude max_tokens 4096 → 8192 상향.
+      (2) return_truncated 플래그 추가 → stop_reason=="max_tokens" 감지.
+      (3) 문헌 추천 + 공용 채팅 루프에 ⚠️ 잘림 경고 st.warning 표시.
+  · py_compile 통과. 호출부 4곳 모두 하위호환 확인. (아직 미커밋)
+
 ---- 2026-06-09 ----
 - [문헌 추천 기능 실사용 테스트 완료]
   · 검색(Semantic Scholar) / SSCI 인용순 정렬 / Claude 분석 → 모두 정상 동작 확인.
@@ -50,17 +65,26 @@
   · 참고: 이 PC(사용자 폴더 신원석)에는 패키지가 없어 테스트용으로
           requests/python-dotenv/anthropic/arxiv 를 base python(3.14)에 설치함.
           (streamlit 등 전체 의존성은 아직 미설치 — 로컬 풀 실행하려면 추가 설치 필요)
-- 미커밋 변경: sjr_data.py(수정), WORKLOG.txt(신규). 아직 push 안 함(push 시 Railway 자동 재배포됨).
+- [커밋 & 푸시 완료] 831bbda "Fix SJR quartile matching..." → origin/master push 완료.
+  · Railway 자동 재배포 트리거됨 (배포 완료까지 1~2분 소요).
+  · git 작성자 정보가 이 PC에 없어서 repo-local로 wss21/wss2105@gmail.com 설정함.
 - 최근 커밋:
     75776c8 Add SJR quartile badges to paper list
     6ee5d30 Add SSCI priority mode to literature recommendation
     36f48be Recommendation: smaller headings, add journal to prompt
 
+---- 세션 종료 시점 상태 (2026-06-09) ----
+- 문헌 추천 기능: 테스트 완료 + SJR 배지 버그 수정 + 커밋/푸시/재배포까지 끝.
+- git: master = origin/master (831bbda), 작업 트리 clean 예정(WORKLOG 저장분만 미커밋).
+- 다음 세션은 아래 TODO부터 이어가면 됨.
+
 ================================================================
  다음 할 일 (TODO)
 ================================================================
 - [x] 문헌 추천 기능 실사용 테스트 (2026-06-09 완료, SJR 배지 버그 수정)
-- [ ] sjr_data.py 변경분 커밋 & push 여부 결정 (push=Railway 재배포)
+- [x] 로컬 전체 의존성 설치 (2026-06-09 완료)
+- [x] 참고문헌 truncation 버그 수정 (2026-06-09, max_tokens 8192 + 잘림 경고)
+- [ ] app.py 변경분 커밋 & push 여부 결정 (push=Railway 재배포)
 - [ ] 단락 작성(RAG) 품질/프롬프트 개선
 - [ ] (사용자 지시 대기 중)
 
