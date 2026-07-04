@@ -69,8 +69,24 @@ def extract_pdf_text(file_path):
     return text
 
 
+def _call_claude(**kwargs):
+    """client.messages.create를 감싸 오류를 사용자 친화적으로 처리하는 공용 함수.
+    성공하면 응답 객체를 반환하고, 오류가 나면 안내 메시지를 띄운 뒤 실행을 안전하게 멈춘다."""
+    try:
+        return client.messages.create(**kwargs)
+    except anthropic.RateLimitError:
+        st.error("⏳ 지금 요청이 많아 잠시 제한됐어요. 1~2분 후 다시 시도해주세요.")
+    except anthropic.APIConnectionError:
+        st.error("🌐 AI 서버에 연결하지 못했어요. 인터넷 연결을 확인하고 다시 시도해주세요.")
+    except anthropic.APIStatusError as e:
+        st.error(f"⚠️ AI 서버 오류가 발생했어요 (코드 {getattr(e, 'status_code', '?')}). 잠시 후 다시 시도해주세요.")
+    except Exception as e:
+        st.error(f"⚠️ AI 처리 중 오류가 발생했어요: {e}")
+    st.stop()
+
+
 def chat_with_claude(messages, return_truncated=False):
-    response = client.messages.create(
+    response = _call_claude(
         model="claude-sonnet-4-6",
         max_tokens=8192,
         system=SYSTEM_PROMPT,
@@ -89,7 +105,7 @@ def write_paragraph_with_refs(topic, style, results, style_profile=None):
     )
     source_list = "\n".join(f"- {r['source']}" for r in results)
     style_section = build_style_instruction(style_profile) if style_profile else ""
-    prompt = f"""아래 참고문헌 내용들을 바탕으로 "{topic}" 주제에 대한 학술적 단락을 작성해주세요.
+    prompt = f"""아래 [참고문헌 내용]만을 근거로 "{topic}" 주제에 대한 학술적 단락을 작성해주세요.
 
 작성 유형: {style}
 {style_section}
@@ -97,15 +113,17 @@ def write_paragraph_with_refs(topic, style, results, style_profile=None):
 {ref_texts}
 
 작성 지침:
-1. 반드시 제공된 참고문헌 내용만을 근거로 작성하세요.
-2. 인용 시 괄호 안에 출처 파일명을 표시하세요. 예: (Smith et al., 2023)
-3. 단락은 3~5문장으로 작성하세요.
-4. 단락 아래에 "**참고문헌:**" 항목으로 사용한 출처 목록을 나열하세요.
+1. 반드시 위 [참고문헌 내용]에 실제로 담긴 정보만 사용하세요. 참고문헌에 없는 사실·수치·주장은 절대 지어내지 마세요.
+2. 참고문헌이 주제를 충분히 뒷받침하지 못하면, 억지로 쓰지 말고 "제공된 참고문헌만으로는 이 주제를 충분히 다루기 어렵습니다"라고 먼저 밝힌 뒤 가능한 범위에서만 작성하세요.
+3. 여러 출처를 단순 나열하지 말고, 논리적으로 연결·종합하여 하나의 매끄러운 단락으로 작성하세요.
+4. 각 주장 문장 끝에 근거가 된 출처를 괄호로 표기하세요. 출처 이름은 아래 [사용 가능한 출처]에 있는 이름을 그대로 사용합니다. 예: (출처 1). 참고문헌 안에서 저자·연도를 확인할 수 있으면 (저자, 연도) 형식을 우선 쓰되, 확인되지 않으면 출처 이름을 그대로 쓰세요.
+5. 객관적이고 학술적인 문체로 3~5문장 작성하세요.
+6. 단락 아래에 "**참고문헌:**" 항목으로 실제 인용한 출처만 나열하세요.
 
-사용된 출처:
+[사용 가능한 출처]
 {source_list}
 """
-    response = client.messages.create(
+    response = _call_claude(
         model="claude-sonnet-4-6",
         max_tokens=2048,
         system=SYSTEM_PROMPT,
@@ -135,7 +153,7 @@ def insert_citations(draft_text, search_results, style_profile=None):
 4. 마지막에 "**참고문헌:**" 섹션을 추가하세요.
 5. 인용을 삽입한 위치와 이유를 간단히 설명하세요.
 """
-    response = client.messages.create(
+    response = _call_claude(
         model="claude-sonnet-4-6",
         max_tokens=4096,
         system=SYSTEM_PROMPT,
@@ -348,7 +366,7 @@ with st.sidebar:
             else:
                 prompt = build_style_prompt(papers)
                 with st.spinner("Claude가 문체 분석 중... (1~2분)"):
-                    result = client.messages.create(
+                    result = _call_claude(
                         model="claude-sonnet-4-6",
                         max_tokens=3000,
                         system=SYSTEM_PROMPT,
