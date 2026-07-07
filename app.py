@@ -13,6 +13,7 @@ import streamlit.components.v1 as components
 from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown, to_word_redline, to_hwpx_redline, diff_segments
+import inplace_redline as ir
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
@@ -1080,10 +1081,23 @@ elif mode == "✍️ 글쓰기 교정":
             st.warning("파일에서 텍스트를 찾지 못했어요. (스캔 이미지 문서는 지원되지 않아요)")
             corr_source = None
 
+    corr_inplace_mode = False
+    if corr_source and corr_file.name.lower().endswith((".docx", ".hwpx")):
+        corr_method = st.radio(
+            "교정 방식",
+            ["🧩 원본 서식 유지 — 표·제목·레이아웃 보존 (권장)",
+             "📝 텍스트만 — 범위 선택 가능"],
+            horizontal=True,
+            help="원본 서식 유지: 문서 구조는 그대로 두고 문단 텍스트만 교정해요. 표는 표대로 유지되고 수정된 단어만 빨간색이 됩니다.",
+        )
+        corr_inplace_mode = corr_method.startswith("🧩")
+
     if corr_source:
         paras = [p.strip() for p in corr_source.splitlines() if p.strip()]
         st.success(f"✅ '{corr_file.name}' 불러옴 — 문단 {len(paras)}개, 총 {len(corr_source):,}자")
-        if len(corr_source) > 6000:
+        if corr_inplace_mode:
+            text_input = corr_source  # 버튼 활성화용 (실제 교정은 원본 구조 기준)
+        elif len(corr_source) > 6000:
             corr_scope = st.radio(
                 "교정 범위", ["📄 전체 문서 (자동 분할 교정)", "✂️ 문단 범위 선택"],
                 horizontal=True,
@@ -1121,7 +1135,97 @@ elif mode == "✍️ 글쓰기 교정":
         help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not corr_style_profile else "교정할 때 내 고유 문체·어휘를 유지합니다.",
     )
 
-    if st.button("교정 시작") and text_input:
+    if corr_inplace_mode and st.button("교정 시작", key="corr_inplace_start") and text_input:
+        style_section = build_style_instruction(corr_style_profile) if use_my_style_corr else ""
+        _raw = corr_file.getvalue()
+        _is_docx = corr_file.name.lower().endswith(".docx")
+        try:
+            if _is_docx:
+                _doc, _pobjs, _texts = ir.collect_docx(io.BytesIO(_raw))
+            else:
+                _state, _texts = ir.collect_hwpx(_raw)
+        except Exception as e:
+            st.error(f"❌ 문서 구조를 읽지 못했어요: {e}")
+            _texts = []
+        if _texts:
+            _chunks = ir.chunk_numbered(_texts)
+            _cmap, _notes, _trunc_any = {}, [], False
+            _prog = st.progress(0, text=f"교정 중... (0/{len(_chunks)})") if len(_chunks) > 1 else None
+            for _ci, (_start, _block) in enumerate(_chunks):
+                _prompt = f"""다음은 문서에서 추출한 문단들입니다 (⟦번호⟧ 문단). 각 문단을 '{correction_type}' 관점에서 교정해주세요.
+{style_section}
+[문단들]
+{_block}
+
+규칙 (반드시 지킬 것):
+1. 출력도 같은 형식으로: ⟦번호⟧ 교정된 문단. 입력의 모든 번호를 빠짐없이 같은 번호로 출력.
+2. 문단을 합치거나 나누지 말고, 새 문단을 추가하지 마세요.
+3. 제목, 표 셀의 숫자·변수명·짧은 항목명은 교정하지 말고 그대로 출력하세요.
+4. 수정할 필요 없는 문단도 번호와 함께 원문 그대로 출력하세요.
+
+마지막에:
+[수정 설명]
+- 주요 수정 내용을 항목별로 간단히"""
+                with st.spinner(f"교정 중... ({_ci + 1}/{len(_chunks)} 구간)"):
+                    _resp, _tr = chat_with_claude(
+                        [{"role": "user", "content": _prompt}], return_truncated=True)
+                _trunc_any = _trunc_any or _tr
+                _m, _expl = ir.parse_numbered(_resp, _texts)
+                _cmap.update(_m)
+                if _expl:
+                    _notes.append(f"[구간 {_ci + 1}]\n{_expl}" if len(_chunks) > 1 else _expl)
+                if _prog:
+                    _prog.progress((_ci + 1) / len(_chunks),
+                                   text=f"교정 중... ({_ci + 1}/{len(_chunks)})")
+            if _prog:
+                _prog.empty()
+            if _trunc_any:
+                st.warning("⚠️ 일부 구간 출력이 잘렸을 수 있어요. 결과를 확인해주세요.")
+            _corrected = [_cmap.get(_i, _t) for _i, _t in enumerate(_texts)]
+            try:
+                if _is_docx:
+                    _out, _n = ir.apply_docx(_doc, _pobjs, _corrected)
+                    _fname, _mime = "교정_서식유지.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                else:
+                    _out, _n = ir.apply_hwpx(_state, _corrected)
+                    _fname, _mime = "교정_서식유지.hwpx", "application/octet-stream"
+                st.session_state["corr_inplace"] = {
+                    "bytes": _out, "fname": _fname, "mime": _mime, "n": _n,
+                    "texts": _texts, "corrected": _corrected,
+                    "explanation": "\n\n".join(_notes),
+                }
+                st.session_state.pop("corr_result", None)
+            except Exception as e:
+                st.error(f"❌ 교정 결과를 문서에 반영하지 못했어요: {e}")
+
+    if st.session_state.get("corr_inplace"):
+        _ci_res = st.session_state["corr_inplace"]
+        st.markdown(f"#### 교정 결과 (원본 서식 유지) — 문단 {_ci_res['n']}개 수정, "
+                    f"<span style='color:#d32f2f'>빨간색</span> = 수정 부분",
+                    unsafe_allow_html=True)
+        _changed_pairs = [(i, o, c) for i, (o, c) in
+                          enumerate(zip(_ci_res["texts"], _ci_res["corrected"]))
+                          if o.strip() != (c or "").strip()]
+        with st.expander(f"수정된 문단 미리보기 ({len(_changed_pairs)}개)", expanded=True):
+            for _i, _o, _c in _changed_pairs[:50]:
+                _ps = []
+                for _seg, _chg in diff_segments(_o, _c):
+                    _e = _html.escape(_seg)
+                    _ps.append(f"<span style='color:#d32f2f;font-weight:600'>{_e}</span>" if _chg else _e)
+                st.markdown(f"<div style='margin-bottom:10px'><b>문단 {_i + 1}</b><br>"
+                            + "".join(_ps) + "</div>", unsafe_allow_html=True)
+            if len(_changed_pairs) > 50:
+                st.caption(f"...외 {len(_changed_pairs) - 50}개 (다운로드 파일에는 전부 반영)")
+        if _ci_res["explanation"]:
+            with st.expander("수정 설명 보기"):
+                st.markdown(_ci_res["explanation"])
+        st.download_button(
+            f"📄 원본 서식 그대로 저장 ({_ci_res['fname'].split('.')[-1]}, 빨간 표시)",
+            data=_ci_res["bytes"], file_name=_ci_res["fname"], mime=_ci_res["mime"],
+            key="corr_inplace_dl",
+        )
+
+    if not corr_inplace_mode and st.button("교정 시작", key="corr_text_start") and text_input:
         style_section = build_style_instruction(corr_style_profile) if use_my_style_corr else ""
         chunks = _split_for_correction(text_input)
         correcteds, notes, truncated_any = [], [], False
@@ -1158,6 +1262,7 @@ elif mode == "✍️ 글쓰기 교정":
             "corrected": "\n\n".join(correcteds),
             "explanation": "\n\n".join(notes),
         }
+        st.session_state.pop("corr_inplace", None)
 
     corr_res = st.session_state.get("corr_result")
     if corr_res:
