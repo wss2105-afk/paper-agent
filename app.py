@@ -199,6 +199,31 @@ def insert_citations(draft_text, search_results, style_profile=None):
     return response.content[0].text
 
 
+def _split_for_correction(text, limit=3000):
+    """문단 경계를 지키며 limit자 내외 구간으로 분할 (전체 문서 교정용)"""
+    paras = [p for p in text.splitlines() if p.strip()]
+    chunks, cur, cur_len = [], [], 0
+    for p in paras:
+        if cur and cur_len + len(p) > limit:
+            chunks.append("\n\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(p)
+        cur_len += len(p)
+    if cur:
+        chunks.append("\n\n".join(cur))
+    return chunks or [text]
+
+
+def _parse_correction(resp):
+    """[교정문]...[교정 끝][수정 설명]... 형식 응답 파싱"""
+    m = re.search(r"\[교정문\]\s*(.*?)\s*\[교정 끝\]", resp, re.S)
+    if not m:
+        return resp.strip(), ""
+    corrected = m.group(1).strip()
+    explanation = resp.split("[교정 끝]", 1)[1].replace("[수정 설명]", "").strip()
+    return corrected, explanation
+
+
 def export_buttons(content, topic, key_prefix):
     """단락 결과 아래에 내보내기 버튼 표시"""
     st.markdown("**내보내기**")
@@ -1059,16 +1084,26 @@ elif mode == "✍️ 글쓰기 교정":
         paras = [p.strip() for p in corr_source.splitlines() if p.strip()]
         st.success(f"✅ '{corr_file.name}' 불러옴 — 문단 {len(paras)}개, 총 {len(corr_source):,}자")
         if len(corr_source) > 6000:
-            st.warning("글이 길어서 한 번에 교정하면 답변이 잘릴 수 있어요. 교정할 문단 범위를 선택하세요. (나눠서 여러 번 교정 추천)")
-            _acc, _end_default = 0, 1
-            for _i, _p in enumerate(paras):
-                _acc += len(_p)
-                if _acc > 6000:
-                    break
-                _end_default = _i + 1
-            _rng = st.slider("교정할 문단 범위", 1, len(paras), (1, _end_default))
-            text_input = "\n\n".join(paras[_rng[0] - 1:_rng[1]])
-            st.caption(f"선택된 분량: 문단 {_rng[1] - _rng[0] + 1}개, {len(text_input):,}자")
+            corr_scope = st.radio(
+                "교정 범위", ["📄 전체 문서 (자동 분할 교정)", "✂️ 문단 범위 선택"],
+                horizontal=True,
+                help="전체 문서: 긴 글을 여러 구간으로 자동 분할해 차례로 교정한 뒤 이어붙여요.",
+            )
+            if corr_scope.startswith("✂️"):
+                _acc, _end_default = 0, 1
+                for _i, _p in enumerate(paras):
+                    _acc += len(_p)
+                    if _acc > 6000:
+                        break
+                    _end_default = _i + 1
+                _rng = st.slider("교정할 문단 범위", 1, len(paras), (1, _end_default))
+                text_input = "\n\n".join(paras[_rng[0] - 1:_rng[1]])
+                st.caption(f"선택된 분량: 문단 {_rng[1] - _rng[0] + 1}개, {len(text_input):,}자")
+            else:
+                text_input = "\n\n".join(paras)
+                _n_chunks = len(_split_for_correction(text_input))
+                st.info(f"전체 {len(text_input):,}자를 {_n_chunks}개 구간으로 나눠 차례로 교정해요. "
+                        f"(구간당 30초~1분, 예상 {_n_chunks}~{_n_chunks*2}분)")
         else:
             text_input = "\n\n".join(paras)
         with st.expander("불러온 내용 미리보기"):
@@ -1088,27 +1123,40 @@ elif mode == "✍️ 글쓰기 교정":
 
     if st.button("교정 시작") and text_input:
         style_section = build_style_instruction(corr_style_profile) if use_my_style_corr else ""
-        prompt = f"""다음 글을 '{correction_type}' 관점에서 교정해주세요.
+        chunks = _split_for_correction(text_input)
+        correcteds, notes, truncated_any = [], [], False
+        prog = st.progress(0, text=f"교정 중... (0/{len(chunks)} 구간)") if len(chunks) > 1 else None
+        for ci, chunk in enumerate(chunks):
+            prompt = f"""다음 글을 '{correction_type}' 관점에서 교정해주세요.
 {style_section}
 [원문]
-{text_input}
+{chunk}
 
 출력 형식 (반드시 지킬 것):
 [교정문]
-(교정된 전체 글만 출력. 머리말·설명·마크다운 서식 없이 순수한 글만)
+(교정된 전체 글만 출력. 머리말·설명·마크다운 서식 없이 순수한 글만. 원문의 모든 문단을 빠짐없이 다룰 것)
 [교정 끝]
 [수정 설명]
 - 무엇을 왜 바꿨는지 항목별로 간단히"""
-        with st.spinner("교정 중..."):
-            corr_resp = chat_with_claude([{"role": "user", "content": prompt}])
-        corrected, explanation = corr_resp, ""
-        m = re.search(r"\[교정문\]\s*(.*?)\s*\[교정 끝\]", corr_resp, re.S)
-        if m:
-            corrected = m.group(1).strip()
-            after = corr_resp.split("[교정 끝]", 1)[1]
-            explanation = after.replace("[수정 설명]", "").strip()
+            with st.spinner(f"교정 중... ({ci + 1}/{len(chunks)} 구간)"):
+                corr_resp, _trunc = chat_with_claude(
+                    [{"role": "user", "content": prompt}], return_truncated=True)
+            truncated_any = truncated_any or _trunc
+            _corr, _expl = _parse_correction(corr_resp)
+            correcteds.append(_corr)
+            if _expl:
+                notes.append(f"[구간 {ci + 1}]\n{_expl}" if len(chunks) > 1 else _expl)
+            if prog:
+                prog.progress((ci + 1) / len(chunks),
+                              text=f"교정 중... ({ci + 1}/{len(chunks)} 구간)")
+        if prog:
+            prog.empty()
+        if truncated_any:
+            st.warning("⚠️ 일부 구간의 출력이 잘렸을 수 있어요. 결과에서 빠진 부분이 보이면 해당 부분만 범위 선택으로 다시 교정해주세요.")
         st.session_state["corr_result"] = {
-            "original": text_input, "corrected": corrected, "explanation": explanation,
+            "original": text_input,
+            "corrected": "\n\n".join(correcteds),
+            "explanation": "\n\n".join(notes),
         }
 
     corr_res = st.session_state.get("corr_result")

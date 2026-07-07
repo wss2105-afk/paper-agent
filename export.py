@@ -109,7 +109,6 @@ def to_word_redline(original: str, corrected: str, explanation: str = "",
 # 유효한 실제 파일을 템플릿으로 쓰고 본문/글자속성만 주입해 호환성을 확보한다.
 
 _HWPX_TEMPLATE = None
-_RED_CHARPR_ID = "100"  # 템플릿의 charPr id(0~6)와 겹치지 않는 값
 
 
 def _hwpx_template_bytes():
@@ -125,10 +124,10 @@ def _hwpx_escape(text: str) -> str:
             .replace('"', "&quot;"))
 
 
-def _hwpx_paragraph(runs, para_id) -> str:
+def _hwpx_paragraph(runs, para_id, red_id) -> str:
     """runs: [(텍스트, 빨간여부)] → <hp:p> XML"""
     run_xml = "".join(
-        f'<hp:run charPrIDRef="{_RED_CHARPR_ID if red else "0"}">'
+        f'<hp:run charPrIDRef="{red_id if red else "0"}">'
         f"<hp:t>{_hwpx_escape(t)}</hp:t></hp:run>"
         for t, red in runs if t
     ) or '<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>'
@@ -144,12 +143,16 @@ def to_hwpx_redline(original: str, corrected: str, explanation: str = "") -> byt
     header = src.read("Contents/header.xml").decode("utf-8")
     section = src.read("Contents/section0.xml").decode("utf-8")
 
-    # 1) 빨간 글자 charPr 추가: 기본 charPr(id=0)을 복제해 색만 변경
+    # 1) 빨간 글자 charPr 추가: 기본 charPr(id=0)을 복제해 색만 변경.
+    #    한글이 charPrIDRef를 순번으로 해석하는 경우가 있어, id는 반드시
+    #    기존 id들에 이어지는 연속 번호로 부여한다 (id 목록과 순번 일치 유지).
     m = re.search(r'<hh:charPr id="0".*?</hh:charPr>', header, re.S)
     if not m:
         raise ValueError("HWPX 템플릿에서 기본 글자 속성을 찾지 못했어요.")
+    existing_ids = [int(x) for x in re.findall(r'<hh:charPr id="(\d+)"', header)]
+    red_id = str(max(existing_ids) + 1)
     red_charpr = (m.group(0)
-                  .replace('id="0"', f'id="{_RED_CHARPR_ID}"', 1)
+                  .replace('id="0"', f'id="{red_id}"', 1)
                   .replace('textColor="#000000"', 'textColor="#C00000"', 1))
     header = header.replace("</hh:charProperties>", red_charpr + "</hh:charProperties>", 1)
     header = re.sub(r'(<hh:charProperties itemCnt=")(\d+)(")',
@@ -169,19 +172,19 @@ def to_hwpx_redline(original: str, corrected: str, explanation: str = "") -> byt
     paras.append(cur)
 
     pid = 90000000
-    body_xml = _hwpx_paragraph([("※ 빨간색 글자 = 원문에서 수정·추가된 부분", False)], pid)
+    body_xml = _hwpx_paragraph([("※ 빨간색 글자 = 원문에서 수정·추가된 부분", False)], pid, red_id)
     for p_runs in paras:
         pid += 1
-        body_xml += _hwpx_paragraph(p_runs, pid)
+        body_xml += _hwpx_paragraph(p_runs, pid, red_id)
     if explanation.strip():
         pid += 1
-        body_xml += _hwpx_paragraph([("", False)], pid)
+        body_xml += _hwpx_paragraph([("", False)], pid, red_id)
         pid += 1
-        body_xml += _hwpx_paragraph([("[수정 설명]", False)], pid)
+        body_xml += _hwpx_paragraph([("[수정 설명]", False)], pid, red_id)
         for line in explanation.strip().splitlines():
             if line.strip():
                 pid += 1
-                body_xml += _hwpx_paragraph([(line.strip(), False)], pid)
+                body_xml += _hwpx_paragraph([(line.strip(), False)], pid, red_id)
 
     section = section.replace("</hs:sec>", body_xml + "</hs:sec>", 1)
 
