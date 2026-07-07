@@ -168,6 +168,19 @@
     linesegarray 제거 → 한글이 열 때 재계산. 테스트 20개 통과.
   · 사용자: "학술지 이름에 따옴표 하지 않아" → SYSTEM_PROMPT 답변원칙 +
     참고문헌 변환 프롬프트에 규칙 추가 (학술지명 따옴표 금지, 이탤릭 표기).
+- [LCSM + 다집단 LCSM + 제안→실행 원클릭] 커밋 4b49f50.
+  · LCSM(잠재변화점수모형): run_lcsm/run_lcsm_multigroup.
+    ※ semopy ModelMeans가 잠재변수 절편(d~1)에서 크래시(start_gamma1 버그)
+      → 단일지표 2시점 LCSM과 수학적으로 동치인 관측 변화점수 방식으로 구현.
+      구간별 Δ평균(t, dz)·Δ분산·비례변화 β(Δ~이전시점). 다집단: Δ평균 차이
+      Welch t + β 차이 z검정. 동치/한계를 요약문에 자동 명시.
+    검증: 심은 β=-0.3 → -0.283 복원, 다집단 차이(0.7) 검출.
+  · 제안→실행: 분석 설계 프롬프트가 [실행 스펙] JSON(method+변수)도 출력
+    → 변수 검증 후 "▶️ 제안된 분석 바로 실행" 버튼 생성 → 클릭 시
+    stats_runner 실행 + APA 해석 + 자동 저장. 설계 결과도 session 유지.
+    method 10종 매핑(ttest_ind/rel, anova, correlation, chisquare, cronbach,
+    regression, hlm, lcsm(+group), lca). 깨진 JSON은 빈 스펙 폴백.
+  · 수동 실행 해석 로직을 _interp_stats 공용 헬퍼로 통합.
 
 ---- 2026-06-09 (추가 세션) ----
 - [글쓰기 교정 모드에 내 문체 프로필 적용 추가]
