@@ -53,8 +53,23 @@
 - [사용자 볼륨 부착 완료 → 저장소 상태 진단 UI 추가] 커밋 72a8946.
   · 사이드바 "내 논문 스타일" 위에 "💾 저장소 상태" expander 추가.
     RAILWAY_VOLUME_MOUNT_PATH 감지해서 영구/임시 저장 여부와 실제 저장 경로 표시.
-  · 확인 방법: 배포 앱 사이드바 → "💾 저장소 상태" 펼치면
-    "영구 볼륨에 저장 중"(초록) 이어야 정상. 그 뒤 업로드+분석 1회 하면 유지됨.
+- [★진짜 근본원인 확정 & 해결 (Railway CLI로 직접 진단)★]
+  · Railway CLI 설치(npm i -g @railway/cli) + railway login 후 프로젝트 링크.
+    ※ paper-agent의 Railway 프로젝트명은 랜덤 자동생성 "ample-playfulness"
+      (서비스명 paper-agent, 볼륨 paper-agent-volume, 프로젝트ID 1405bed1...).
+  · CLI로 확인한 실제 상태:
+      - 볼륨 paper-agent-volume: mountPath=/data, state=READY, 5GB. ★볼륨은 처음부터 정상★
+      - RAILWAY_VOLUME_MOUNT_PATH=/data 도 정상 주입돼 있었음.
+      - ★범인★ 환경변수 DATA_DIR = "./data" 로 박혀 있었음!
+        → 앱이 볼륨(/data)을 두고도 임시 디스크(./data)에 저장 → 재배포마다 소실.
+  · 해결: railway variables --set "DATA_DIR=/data" 로 변경 → 자동 재배포.
+    ※ Git Bash가 /data를 C:/Program Files/Git/data 로 자동변환하는 버그 있어서
+      MSYS_NO_PATHCONV=1 붙여서 설정해야 함(주의).
+    검증: railway run printenv DATA_DIR → "/data" 확인. 새 배포 RUNNING.
+  · 재발방지 코드(커밋 e5b960b): DATA_DIR보다 RAILWAY_VOLUME_MOUNT_PATH를 우선.
+      DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or "./data"
+    → 이제 DATA_DIR이 잘못 설정돼 있어도 볼륨만 붙어 있으면 볼륨에 저장됨.
+  · 남은 일: 배포 앱에서 내 논문 업로드 → "스타일 분석 시작" 1회. 이후 영구 유지.
 
 ---- 2026-06-09 (추가 세션) ----
 - [글쓰기 교정 모드에 내 문체 프로필 적용 추가]
