@@ -23,6 +23,11 @@ from style_analyzer import (
     load_style_profile, build_style_instruction
 )
 from sjr_data import quartile_badge
+from projects import (
+    load_projects, save_projects, project_dir, migrate_legacy,
+    load_analyses, save_analysis, delete_analysis, tables_from_record,
+    MAX_PROJECTS,
+)
 
 load_dotenv()
 
@@ -33,8 +38,18 @@ load_dotenv()
 # 볼륨 경로를 최우선으로 둔다. 과거 DATA_DIR=./data 로 잘못 설정돼 볼륨을 두고도
 # 임시 디스크에 저장 → 재배포마다 데이터 소실되던 사고 재발 방지.
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or "./data"
-PDF_DIR        = Path(DATA_DIR) / "pdfs"
-DB_DIR         = Path(DATA_DIR) / "reference_db"
+
+# ── 논문 프로젝트(워크스페이스) ───────────────────────────────
+# 참고문헌 PDF / RAG 인덱스 / 분석 결과는 프로젝트별로 분리.
+# 내 문체 프로필은 사람에 속하므로 전역 유지.
+migrate_legacy(DATA_DIR)
+PROJECTS = load_projects(DATA_DIR)
+if st.session_state.get("project_id") not in [p["id"] for p in PROJECTS]:
+    st.session_state["project_id"] = PROJECTS[0]["id"]
+
+PROJ_DIR       = project_dir(DATA_DIR, st.session_state["project_id"])
+PDF_DIR        = PROJ_DIR / "pdfs"
+DB_DIR         = PROJ_DIR / "reference_db"
 MY_PAPERS_DIR  = Path(DATA_DIR) / "my_papers"
 STYLE_PROFILE  = Path(DATA_DIR) / "style_profile.json"
 
@@ -69,8 +84,9 @@ SYSTEM_PROMPT = """당신은 교육공학 분야의 학술 논문 작성을 전�
 
 
 @st.cache_resource
-def get_library():
-    return ReferenceLibrary(db_path=str(DB_DIR))
+def get_library(db_path):
+    # 프로젝트별 인덱스 경로가 캐시 키 → 프로젝트 전환 시 해당 라이브러리 로드
+    return ReferenceLibrary(db_path=db_path)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -255,10 +271,44 @@ setInterval(updateIcon, 1500);
 st.title("📝 논문 작성 도우미")
 st.caption("교육공학 논문 작성을 위한 AI 에이전트")
 
-library = get_library()
+library = get_library(str(DB_DIR))
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
+    # ── 논문 프로젝트 선택 ──────────────────────────────────
+    st.subheader("📂 논문 프로젝트")
+    proj_cols = st.columns(len(PROJECTS))
+    for i, p in enumerate(PROJECTS):
+        is_cur = p["id"] == st.session_state["project_id"]
+        if proj_cols[i].button(
+            p["id"], key=f"proj_btn_{p['id']}",
+            type="primary" if is_cur else "secondary",
+            use_container_width=True, help=p["name"],
+        ) and not is_cur:
+            st.session_state["project_id"] = p["id"]
+            st.session_state.pop("stats_run", None)  # 이전 프로젝트 결과 잔상 제거
+            st.rerun()
+    _cur_proj = next(p for p in PROJECTS if p["id"] == st.session_state["project_id"])
+    st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**")
+    with st.expander("✏️ 이름 바꾸기 / 프로젝트 추가"):
+        _new_name = st.text_input("현재 프로젝트 이름", value=_cur_proj["name"],
+                                  key=f"pname_{_cur_proj['id']}", max_chars=20)
+        c1, c2 = st.columns(2)
+        if c1.button("💾 이름 저장", use_container_width=True):
+            _cur_proj["name"] = _new_name.strip() or _cur_proj["name"]
+            save_projects(DATA_DIR, PROJECTS)
+            st.rerun()
+        if len(PROJECTS) < MAX_PROJECTS:
+            if c2.button("➕ 프로젝트 추가", use_container_width=True):
+                _nid = str(max(int(p["id"]) for p in PROJECTS) + 1)
+                PROJECTS.append({"id": _nid, "name": f"프로젝트 {_nid}"})
+                save_projects(DATA_DIR, PROJECTS)
+                st.session_state["project_id"] = _nid
+                st.rerun()
+        else:
+            c2.caption(f"최대 {MAX_PROJECTS}개")
+
+    st.divider()
     st.header("기능 선택")
     mode = st.radio(
         "원하는 작업을 선택하세요",
@@ -884,6 +934,12 @@ elif mode == "📊 데이터 분석 설계":
                         st.session_state["stats_run"] = {
                             "analysis": analysis, "result": res, "interp": interp,
                         }
+                        # 프로젝트별 영구 저장 (화면 이동·재접속해도 유지)
+                        try:
+                            save_analysis(PROJ_DIR, analysis, res, interp,
+                                          note=uploaded_data.name)
+                        except Exception:
+                            st.warning("결과 저장에 실패했어요. (분석 결과는 아래에 표시됩니다)")
 
                 saved = st.session_state.get("stats_run")
                 if saved:
@@ -904,6 +960,40 @@ elif mode == "📊 데이터 분석 설계":
 
         except Exception as e:
             st.error(f"❌ 파일 로드 오류: {e}")
+
+    # ── 저장된 분석 결과 (프로젝트별, 영구 보관) ──────────────
+    st.divider()
+    saved_records = load_analyses(PROJ_DIR)
+    st.subheader(f"🗂️ 저장된 분석 결과 — {len(saved_records)}건")
+    st.caption("분석을 실행하면 자동 저장돼요. 화면을 옮기거나 새로 접속해도 프로젝트별로 유지됩니다. (최근 30건)")
+    if not saved_records:
+        st.info("아직 저장된 분석이 없어요. 위에서 데이터를 업로드하고 분석을 실행해보세요.")
+    for ridx, rec in enumerate(saved_records):
+        note = f" · {rec['note']}" if rec.get("note") else ""
+        with st.expander(f"📌 {rec['time']} · {rec['analysis']}{note}"):
+            try:
+                for tname, tdf in tables_from_record(rec).items():
+                    st.markdown(f"**{tname}**")
+                    st.dataframe(tdf, use_container_width=True)
+            except Exception:
+                st.text(rec.get("summary", "(표 복원 실패)"))
+            if rec.get("interp"):
+                st.markdown("**📝 논문용 결과 해석**")
+                st.markdown(rec["interp"])
+            dcol1, dcol2 = st.columns([1, 1])
+            export_text = (
+                f"[{rec['time']}] {rec['analysis']}{note}\n\n"
+                f"== 결과 요약 ==\n{rec.get('summary', '')}\n\n"
+                + (f"== 논문용 해석 ==\n{rec['interp']}" if rec.get("interp") else "")
+            )
+            dcol1.download_button(
+                "📋 저장 (.txt)", export_text,
+                file_name=f"분석결과_{rec['time'].replace(':', '').replace(' ', '_')}.txt",
+                mime="text/plain", key=f"rec_dl_{ridx}",
+            )
+            if dcol2.button("🗑️ 삭제", key=f"rec_del_{ridx}"):
+                delete_analysis(PROJ_DIR, ridx)
+                st.rerun()
 
 # ── PDF 분석 ─────────────────────────────────────────────────
 elif mode == "📄 PDF 분석":
