@@ -1026,7 +1026,47 @@ elif mode == "🏗️ 논문 구조 설계":
 # ── 글쓰기 교정 ───────────────────────────────────────────────
 elif mode == "✍️ 글쓰기 교정":
     st.subheader("글쓰기 교정")
-    text_input = st.text_area("교정할 문장/문단을 입력하세요", height=200)
+
+    corr_file = st.file_uploader(
+        "Word(.docx) 또는 텍스트(.txt) 파일 업로드 (선택)",
+        type=["docx", "txt"],
+        help="파일을 올리면 내용을 추출해 교정해요. 아래에 직접 입력해도 됩니다.",
+    )
+    corr_source = None
+    if corr_file:
+        try:
+            if corr_file.name.lower().endswith(".docx"):
+                from docx import Document
+                _doc = Document(corr_file)
+                corr_source = "\n".join(p.text for p in _doc.paragraphs if p.text.strip())
+            else:
+                corr_source = corr_file.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            st.error(f"❌ 파일을 읽지 못했어요: {e}")
+        if corr_source is not None and not corr_source.strip():
+            st.warning("파일에서 텍스트를 찾지 못했어요. (스캔 이미지 문서는 지원되지 않아요)")
+            corr_source = None
+
+    if corr_source:
+        paras = [p.strip() for p in corr_source.splitlines() if p.strip()]
+        st.success(f"✅ '{corr_file.name}' 불러옴 — 문단 {len(paras)}개, 총 {len(corr_source):,}자")
+        if len(corr_source) > 6000:
+            st.warning("글이 길어서 한 번에 교정하면 답변이 잘릴 수 있어요. 교정할 문단 범위를 선택하세요. (나눠서 여러 번 교정 추천)")
+            _acc, _end_default = 0, 1
+            for _i, _p in enumerate(paras):
+                _acc += len(_p)
+                if _acc > 6000:
+                    break
+                _end_default = _i + 1
+            _rng = st.slider("교정할 문단 범위", 1, len(paras), (1, _end_default))
+            text_input = "\n\n".join(paras[_rng[0] - 1:_rng[1]])
+            st.caption(f"선택된 분량: 문단 {_rng[1] - _rng[0] + 1}개, {len(text_input):,}자")
+        else:
+            text_input = "\n\n".join(paras)
+        with st.expander("불러온 내용 미리보기"):
+            st.text(text_input[:2000] + ("..." if len(text_input) > 2000 else ""))
+    else:
+        text_input = st.text_area("교정할 문장/문단을 입력하세요", height=200)
     correction_type = st.selectbox("교정 유형",
         ["학술체로 변환", "문장 명확성 개선", "논리 흐름 개선", "전체 교정"])
 
