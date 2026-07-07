@@ -139,15 +139,19 @@ def chat_with_claude(messages, return_truncated=False):
     return text
 
 
-def write_paragraph_with_refs(topic, style, results, style_profile=None):
+def write_paragraph_with_refs(topic, style, results, style_profile=None, language="한국어"):
     ref_texts = "\n\n".join(
         f"[출처 {i+1}: {r['source']}]\n{r['text']}"
         for i, r in enumerate(results)
     )
     source_list = "\n".join(f"- {r['source']}" for r in results)
     style_section = build_style_instruction(style_profile) if style_profile else ""
+    lang_line = ("반드시 영어(English)로 작성하세요. 학술 논문에 적합한 영어 문체를 사용하세요."
+                 if language == "English"
+                 else "반드시 한국어로 작성하세요.")
     prompt = f"""아래 [참고문헌 내용]만을 근거로 "{topic}" 주제에 대한 학술적 단락을 작성해주세요.
 
+작성 언어: {lang_line}
 작성 유형: {style}
 {style_section}
 [참고문헌 내용]
@@ -155,11 +159,11 @@ def write_paragraph_with_refs(topic, style, results, style_profile=None):
 
 작성 지침:
 1. 반드시 위 [참고문헌 내용]에 실제로 담긴 정보만 사용하세요. 참고문헌에 없는 사실·수치·주장은 절대 지어내지 마세요.
-2. 참고문헌이 주제를 충분히 뒷받침하지 못하면, 억지로 쓰지 말고 "제공된 참고문헌만으로는 이 주제를 충분히 다루기 어렵습니다"라고 먼저 밝힌 뒤 가능한 범위에서만 작성하세요.
+2. 참고문헌이 주제를 충분히 뒷받침하지 못하면, 억지로 쓰지 말고 그 사실을 먼저 밝힌 뒤 가능한 범위에서만 작성하세요.
 3. 여러 출처를 단순 나열하지 말고, 논리적으로 연결·종합하여 하나의 매끄러운 단락으로 작성하세요.
 4. 각 주장 문장 끝에 근거가 된 출처를 괄호로 표기하세요. 출처 이름은 아래 [사용 가능한 출처]에 있는 이름을 그대로 사용합니다. 예: (출처 1). 참고문헌 안에서 저자·연도를 확인할 수 있으면 (저자, 연도) 형식을 우선 쓰되, 확인되지 않으면 출처 이름을 그대로 쓰세요.
-5. 객관적이고 학술적인 문체로 3~5문장 작성하세요.
-6. 단락 아래에 "**참고문헌:**" 항목으로 실제 인용한 출처만 나열하세요.
+5. 객관적이고 학술적인 문체로 3~5문장 작성하세요. ({lang_line})
+6. 단락 아래에 참고문헌 항목(영어면 "References:", 한국어면 "**참고문헌:**")으로 실제 인용한 출처만 나열하세요.
 
 [사용 가능한 출처]
 {source_list}
@@ -510,11 +514,13 @@ if mode == "📚 단락 작성 · 논문 분석":
         else:
             topic = st.text_input("작성할 주제를 입력하세요",
                                   placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향")
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 style = st.selectbox("단락 유형",
                                      ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"])
             with col2:
+                rag_lang = st.selectbox("작성 언어", ["한국어", "English"])
+            with col3:
                 top_k = st.slider("참고할 논문 수", 3, 8, 5)
 
             rag_style_profile = load_style_profile(str(STYLE_PROFILE))
@@ -553,7 +559,8 @@ if mode == "📚 단락 작성 · 논문 분석":
 
                     with st.spinner("단락 작성 중..."):
                         applied_profile = rag_style_profile if use_my_style_rag else None
-                        paragraph = write_paragraph_with_refs(topic, style, results, applied_profile)
+                        paragraph = write_paragraph_with_refs(topic, style, results,
+                                                              applied_profile, rag_lang)
 
                     st.markdown("### 작성된 단락")
                     st.markdown(paragraph)
