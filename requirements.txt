@@ -13,3 +13,4 @@ scipy
 statsmodels
 semopy
 stepmix
+olefile

@@ -104,6 +104,104 @@ def to_word_redline(original: str, corrected: str, explanation: str = "",
     return buf.getvalue()
 
 
+# ── HWPX(한글) 내보내기 ───────────────────────────────────────
+# assets/hwpx_template.hwpx: 한글이 만든 빈 문서(hwpxlib 프로젝트, Apache-2.0).
+# 유효한 실제 파일을 템플릿으로 쓰고 본문/글자속성만 주입해 호환성을 확보한다.
+
+_HWPX_TEMPLATE = None
+_RED_CHARPR_ID = "100"  # 템플릿의 charPr id(0~6)와 겹치지 않는 값
+
+
+def _hwpx_template_bytes():
+    global _HWPX_TEMPLATE
+    if _HWPX_TEMPLATE is None:
+        from pathlib import Path
+        _HWPX_TEMPLATE = (Path(__file__).parent / "assets" / "hwpx_template.hwpx").read_bytes()
+    return _HWPX_TEMPLATE
+
+
+def _hwpx_escape(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
+def _hwpx_paragraph(runs, para_id) -> str:
+    """runs: [(텍스트, 빨간여부)] → <hp:p> XML"""
+    run_xml = "".join(
+        f'<hp:run charPrIDRef="{_RED_CHARPR_ID if red else "0"}">'
+        f"<hp:t>{_hwpx_escape(t)}</hp:t></hp:run>"
+        for t, red in runs if t
+    ) or '<hp:run charPrIDRef="0"><hp:t></hp:t></hp:run>'
+    return (f'<hp:p id="{para_id}" paraPrIDRef="3" styleIDRef="0" '
+            f'pageBreak="0" columnBreak="0" merged="0">{run_xml}</hp:p>')
+
+
+def to_hwpx_redline(original: str, corrected: str, explanation: str = "") -> bytes:
+    """교정문을 한글(.hwpx)로 내보내되, 수정된 부분을 빨간 글자로 표시."""
+    import zipfile
+
+    src = zipfile.ZipFile(io.BytesIO(_hwpx_template_bytes()))
+    header = src.read("Contents/header.xml").decode("utf-8")
+    section = src.read("Contents/section0.xml").decode("utf-8")
+
+    # 1) 빨간 글자 charPr 추가: 기본 charPr(id=0)을 복제해 색만 변경
+    m = re.search(r'<hh:charPr id="0".*?</hh:charPr>', header, re.S)
+    if not m:
+        raise ValueError("HWPX 템플릿에서 기본 글자 속성을 찾지 못했어요.")
+    red_charpr = (m.group(0)
+                  .replace('id="0"', f'id="{_RED_CHARPR_ID}"', 1)
+                  .replace('textColor="#000000"', 'textColor="#C00000"', 1))
+    header = header.replace("</hh:charProperties>", red_charpr + "</hh:charProperties>", 1)
+    header = re.sub(r'(<hh:charProperties itemCnt=")(\d+)(")',
+                    lambda mm: mm.group(1) + str(int(mm.group(2)) + 1) + mm.group(3),
+                    header, count=1)
+
+    # 2) 본문 문단 구성 (문단 경계 = 개행)
+    paras, cur = [], []
+    for text, changed in diff_segments(original, corrected):
+        parts = text.split("\n")
+        for k, part in enumerate(parts):
+            if k > 0:
+                paras.append(cur)
+                cur = []
+            if part:
+                cur.append((part, changed))
+    paras.append(cur)
+
+    pid = 90000000
+    body_xml = _hwpx_paragraph([("※ 빨간색 글자 = 원문에서 수정·추가된 부분", False)], pid)
+    for p_runs in paras:
+        pid += 1
+        body_xml += _hwpx_paragraph(p_runs, pid)
+    if explanation.strip():
+        pid += 1
+        body_xml += _hwpx_paragraph([("", False)], pid)
+        pid += 1
+        body_xml += _hwpx_paragraph([("[수정 설명]", False)], pid)
+        for line in explanation.strip().splitlines():
+            if line.strip():
+                pid += 1
+                body_xml += _hwpx_paragraph([(line.strip(), False)], pid)
+
+    section = section.replace("</hs:sec>", body_xml + "</hs:sec>", 1)
+
+    # 3) zip 재조립 (mimetype은 관례대로 무압축 선두 배치)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", src.read("mimetype"), compress_type=zipfile.ZIP_STORED)
+        for name in src.namelist():
+            if name == "mimetype":
+                continue
+            elif name == "Contents/header.xml":
+                zf.writestr(name, header)
+            elif name == "Contents/section0.xml":
+                zf.writestr(name, section)
+            else:
+                zf.writestr(name, src.read(name))
+    src.close()
+    return out.getvalue()
+
+
 def to_markdown(title: str, content: str, topic: str = "") -> str:
     lines = [f"# {title}"]
     if topic:

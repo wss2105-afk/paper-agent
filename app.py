@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import streamlit.components.v1 as components
 from rag import ReferenceLibrary
 from scholar import search_papers
-from export import to_word, to_markdown, to_word_redline, diff_segments
+from export import to_word, to_markdown, to_word_redline, to_hwpx_redline, diff_segments
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
@@ -735,8 +735,8 @@ elif mode == "📊 데이터 분석 설계":
 
     uploaded_data = st.file_uploader(
         "데이터 파일 업로드",
-        type=["xlsx", "xls", "sav", "csv", "txt", "docx", "hwpx"],
-        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwpx) 지원",
+        type=["xlsx", "xls", "sav", "csv", "txt", "docx", "hwp", "hwpx"],
+        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwp/.hwpx) 지원",
     )
     research_context = st.text_input(
         "연구 맥락 (선택)",
@@ -1029,9 +1029,9 @@ elif mode == "✍️ 글쓰기 교정":
     st.subheader("글쓰기 교정")
 
     corr_file = st.file_uploader(
-        "Word(.docx), 한글(.hwpx), 텍스트(.txt) 파일 업로드 (선택)",
-        type=["docx", "hwpx", "txt"],
-        help="파일을 올리면 내용을 추출해 교정해요. 아래에 직접 입력해도 됩니다. 구형 .hwp는 한글에서 '다른 이름으로 저장 → HWPX'로 저장 후 올려주세요.",
+        "Word(.docx), 한글(.hwp/.hwpx), 텍스트(.txt) 파일 업로드 (선택)",
+        type=["docx", "hwp", "hwpx", "txt"],
+        help="파일을 올리면 내용을 추출해 교정해요. 아래에 직접 입력해도 됩니다.",
     )
     corr_source = None
     if corr_file:
@@ -1044,6 +1044,9 @@ elif mode == "✍️ 글쓰기 교정":
             elif _cname.endswith(".hwpx"):
                 from data_analyzer import extract_hwpx_text
                 corr_source = extract_hwpx_text(corr_file)
+            elif _cname.endswith(".hwp"):
+                from data_analyzer import extract_hwp_text
+                corr_source = extract_hwp_text(corr_file)
             else:
                 corr_source = corr_file.read().decode("utf-8", errors="ignore")
         except Exception as e:
@@ -1124,9 +1127,9 @@ elif mode == "✍️ 글쓰기 교정":
         if corr_res["explanation"]:
             with st.expander("수정 설명 보기", expanded=True):
                 st.markdown(corr_res["explanation"])
-        dl1, dl2 = st.columns(2)
+        dl1, dl2, dl3 = st.columns(3)
         dl1.download_button(
-            "📄 Word로 저장 (수정 빨간색 표시)",
+            "📄 Word (.docx, 빨간 표시)",
             data=to_word_redline(corr_res["original"], corr_res["corrected"],
                                  corr_res["explanation"]),
             file_name="교정결과_빨간표시.docx",
@@ -1134,7 +1137,15 @@ elif mode == "✍️ 글쓰기 교정":
             key="corr_docx",
         )
         dl2.download_button(
-            "📋 교정문만 저장 (.txt)", corr_res["corrected"],
+            "📄 한글 (.hwpx, 빨간 표시)",
+            data=to_hwpx_redline(corr_res["original"], corr_res["corrected"],
+                                 corr_res["explanation"]),
+            file_name="교정결과_빨간표시.hwpx",
+            mime="application/octet-stream",
+            key="corr_hwpx",
+        )
+        dl3.download_button(
+            "📋 교정문만 (.txt)", corr_res["corrected"],
             file_name="교정결과.txt", mime="text/plain", key="corr_txt",
         )
 

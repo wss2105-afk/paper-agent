@@ -37,8 +37,95 @@ def extract_hwpx_text(file_like):
     return "\n".join(p for p in paras if p.strip())
 
 
+# HWP 5.0 텍스트 레코드 안의 제어문자 처리:
+#   인라인/확장 제어(1~23 중 아래 목록)는 자기 자신 포함 8 WCHAR(16바이트)를 차지
+#   나머지(0, 10, 13, 24~31)는 1 WCHAR — 13(문단끝)/10(줄바꿈)만 개행으로 반영
+_HWP_CTRL_8WCHAR = {1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
+
+
+def extract_hwp_text(file_like):
+    """구형 한글(.hwp, HWP 5.0 바이너리) 본문 텍스트 추출.
+    BodyText 섹션의 레코드를 파싱해 문단 텍스트(HWPTAG_PARA_TEXT=67)를 모은다.
+    본문 파싱이 실패하면 미리보기(PrvText) 스트림으로 폴백."""
+    import struct
+    import zlib
+
+    import olefile
+
+    if not olefile.isOleFile(file_like):
+        raise ValueError("HWP 5.0 형식이 아니에요. (한글 2002 이전 파일이거나 손상됐을 수 있어요)")
+    ole = olefile.OleFileIO(file_like)
+    try:
+        header = ole.openstream("FileHeader").read()
+        if not header.startswith(b"HWP Document File"):
+            raise ValueError("HWP 파일 헤더를 인식할 수 없어요.")
+        flags = struct.unpack("<I", header[36:40])[0]
+        if flags & 0x2:
+            raise ValueError("암호가 걸린 .hwp 파일이에요. 한글에서 암호를 해제한 뒤 올려주세요.")
+        compressed = bool(flags & 0x1)
+
+        def parse_bodytext():
+            secs = sorted(
+                (e for e in ole.listdir() if len(e) == 2 and e[0] == "BodyText"),
+                key=lambda e: int(e[1].replace("Section", "") or 0),
+            )
+            if not secs:
+                raise ValueError("본문(BodyText)이 없어요.")
+            paras = []
+            for entry in secs:
+                data = ole.openstream(entry).read()
+                if compressed:
+                    data = zlib.decompress(data, -15)
+                i = 0
+                while i + 4 <= len(data):
+                    hdr = struct.unpack("<I", data[i:i + 4])[0]
+                    tag = hdr & 0x3FF
+                    size = (hdr >> 20) & 0xFFF
+                    i += 4
+                    if size == 0xFFF:  # 확장 크기
+                        size = struct.unpack("<I", data[i:i + 4])[0]
+                        i += 4
+                    if tag == 67:  # HWPTAG_PARA_TEXT
+                        payload = data[i:i + size]
+                        j, buf = 0, []
+                        while j + 2 <= len(payload):
+                            code = struct.unpack("<H", payload[j:j + 2])[0]
+                            if code in _HWP_CTRL_8WCHAR:
+                                j += 16
+                            elif code < 32:
+                                if code in (10, 13):
+                                    buf.append("\n")
+                                j += 2
+                            else:
+                                buf.append(chr(code))
+                                j += 2
+                        text = "".join(buf).strip()
+                        if text:
+                            paras.append(text)
+                    i += size
+            return "\n".join(paras)
+
+        try:
+            text = parse_bodytext()
+            if text.strip():
+                return text
+        except ValueError:
+            raise
+        except Exception:
+            pass  # 본문 파싱 실패 → 미리보기 폴백
+
+        # 폴백: PrvText(미리보기, 앞부분 일부만 담김)
+        if ole.exists("PrvText"):
+            prv = ole.openstream("PrvText").read().decode("utf-16-le", errors="ignore").strip("\x00 \r\n")
+            if prv.strip():
+                return prv + "\n\n[안내] 본문 전체 추출에 실패해 미리보기 텍스트만 불러왔어요. 한글에서 HWPX로 저장 후 올리면 전체가 추출됩니다."
+        raise ValueError("본문 텍스트를 추출하지 못했어요. 한글에서 '다른 이름으로 저장 → HWPX'로 저장 후 올려주세요.")
+    finally:
+        ole.close()
+
+
 def load_file(uploaded_file):
-    """Excel, SPSS, CSV, 텍스트, Word, HWPX 파일 로드"""
+    """Excel, SPSS, CSV, 텍스트, Word, 한글(HWP/HWPX) 파일 로드"""
     name = uploaded_file.name.lower()
 
     if name.endswith(".sav"):
@@ -67,6 +154,10 @@ def load_file(uploaded_file):
 
     elif name.endswith(".hwpx"):
         text = extract_hwpx_text(uploaded_file)
+        return "qualitative", text, None
+
+    elif name.endswith(".hwp"):
+        text = extract_hwp_text(uploaded_file)
         return "qualitative", text, None
 
     else:
