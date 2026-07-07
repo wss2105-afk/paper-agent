@@ -212,6 +212,13 @@
 - [단락 작성 언어 선택(한국어/English)] 커밋 5e093ac. (사용자 요청)
   · 단락 작성 탭에 "작성 언어" 셀렉트박스 추가. write_paragraph_with_refs에
     language 인자 → 프롬프트에 언어 지시 + 참고문헌 헤딩(참고문헌/References) 분기.
+- [★코드 전체 점검 & 버그 수정★] 커밋 e5467ae. (사용자: "전체적으로 점검")
+  · ★크래시 버그★ app.py에 io 미import인데 docx "원본 서식 유지" 교정 경로에서
+    io.BytesIO 사용 → docx 기본 교정 시 NameError. import io 추가로 수정.
+  · 시작 단계 migrate_legacy를 try/except로 감쌈(이전 실패가 앱 부팅 막지 않게).
+  · 점검 방법: pyflakes(전 파일 undefined name 0) + Streamlit AppTest로 8개 모드
+    전부 예외 없이 렌더 확인 + 프로젝트 전환/재실행 안정성 확인 + 중복 위젯키 0.
+  · 무해 확인: f-string placeholder 경고들은 여러 줄 문자열 연결 오탐.
 
 ---- 2026-06-09 (추가 세션) ----
 - [글쓰기 교정 모드에 내 문체 프로필 적용 추가]
