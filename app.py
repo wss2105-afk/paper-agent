@@ -259,6 +259,83 @@ def export_buttons(content, topic, key_prefix):
         )
 
 
+def render_library_manager():
+    """참고문헌 라이브러리 관리 UI (PDF 업로드 + 학습 + 목록 + 초기화).
+    단락 작성/PDF 분석 통합 모드 안에서 사용."""
+    saved_pdfs = list(PDF_DIR.glob("*.pdf"))
+    if library.is_ready():
+        st.success(f"✅ {library.count_papers()}개 논문 학습 완료")
+    elif saved_pdfs:
+        st.warning(f"⚠️ {len(saved_pdfs)}개 파일 있음 — 아래 '문헌 학습 시작'을 눌러주세요")
+    else:
+        st.info("논문 PDF를 업로드하면 단락 작성·분석에 활용해요. (여러 개 가능)")
+
+    uploaded_files = st.file_uploader(
+        "논문 PDF 업로드 (여러 개 가능)", type="pdf",
+        accept_multiple_files=True, key="lib_uploader",
+    )
+    if uploaded_files:
+        new_files = []
+        for uf in uploaded_files:
+            dest = PDF_DIR / uf.name
+            if not dest.exists():
+                dest.write_bytes(uf.read())
+                new_files.append(uf.name)
+            else:
+                uf.seek(0)
+        if new_files:
+            st.info(f"{len(new_files)}개 파일 저장됨")
+
+    saved_pdfs = list(PDF_DIR.glob("*.pdf"))
+    if saved_pdfs:
+        with st.expander(f"저장된 논문 {len(saved_pdfs)}개 보기 / 삭제"):
+            for p in saved_pdfs:
+                c1, c2 = st.columns([5, 1])
+                c1.caption(p.name[:50])
+                if c2.button("🗑️", key=f"del_{p.name}"):
+                    p.unlink()
+                    st.rerun()
+        col_a, col_b = st.columns([2, 1])
+        if col_a.button("🔄 문헌 학습 시작", use_container_width=True,
+                        help="업로드한 PDF를 색인해 단락 작성(RAG)에 사용할 수 있게 해요."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def on_progress(current, total, name):
+                progress_bar.progress(current / total)
+                status_text.text(f"처리 중: {name[:30]}...")
+
+            with st.spinner("PDF 분석 중..."):
+                indexed, errors = library.index_folder(str(PDF_DIR), on_progress)
+            progress_bar.empty()
+            status_text.empty()
+            st.success(f"✅ {len(indexed)}개 논문 학습 완료!")
+            if errors:
+                with st.expander(f"⚠️ 오류 {len(errors)}건"):
+                    for e in errors:
+                        st.text(e)
+            st.rerun()
+        if col_b.button("🗑️ 전체 초기화", use_container_width=True, type="secondary"):
+            st.session_state.confirm_reset = True
+
+    if st.session_state.get("confirm_reset"):
+        st.warning("정말 삭제할까요? 이 프로젝트의 모든 PDF와 학습 데이터가 사라져요.")
+        c1, c2 = st.columns(2)
+        if c1.button("✅ 확인", use_container_width=True):
+            import shutil
+            for f in PDF_DIR.glob("*.pdf"):
+                f.unlink()
+            if DB_DIR.exists():
+                shutil.rmtree(DB_DIR)
+                DB_DIR.mkdir(parents=True, exist_ok=True)
+            get_library.clear()
+            st.session_state.confirm_reset = False
+            st.rerun()
+        if c2.button("❌ 취소", use_container_width=True):
+            st.session_state.confirm_reset = False
+            st.rerun()
+
+
 # ── 페이지 설정 ───────────────────────────────────────────────
 st.set_page_config(page_title="논문 작성 도우미", page_icon="📝", layout="wide")
 st.markdown("""
@@ -343,93 +420,10 @@ with st.sidebar:
     st.header("기능 선택")
     mode = st.radio(
         "원하는 작업을 선택하세요",
-        ["💬 자유 질문", "📚 단락 작성 (RAG)", "✒️ 인용 자동 삽입",
-         "🔍 문헌 추천", "📊 데이터 분석 설계", "📄 PDF 분석",
+        ["💬 자유 질문", "📚 단락 작성 · 논문 분석", "✒️ 인용 자동 삽입",
+         "🔍 문헌 추천", "📊 데이터 분석 설계",
          "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
     )
-
-    st.divider()
-
-    # 참고문헌 라이브러리 관리
-    st.subheader("📁 참고문헌 라이브러리")
-
-    saved_pdfs = list(PDF_DIR.glob("*.pdf"))
-    if library.is_ready():
-        st.success(f"✅ {library.count_papers()}개 논문 학습 완료")
-    elif saved_pdfs:
-        st.warning(f"⚠️ {len(saved_pdfs)}개 파일 있음 — 학습 필요")
-    else:
-        st.warning("⚠️ 업로드된 논문 없음")
-
-    uploaded_files = st.file_uploader(
-        "PDF 업로드 (여러 개 가능)",
-        type="pdf",
-        accept_multiple_files=True,
-    )
-
-    if uploaded_files:
-        new_files = []
-        for uf in uploaded_files:
-            dest = PDF_DIR / uf.name
-            if not dest.exists():
-                dest.write_bytes(uf.read())
-                new_files.append(uf.name)
-            else:
-                uf.seek(0)
-        if new_files:
-            st.info(f"{len(new_files)}개 파일 저장됨")
-
-    saved_pdfs = list(PDF_DIR.glob("*.pdf"))
-    if saved_pdfs:
-        with st.expander(f"저장된 논문 {len(saved_pdfs)}개 보기"):
-            for p in saved_pdfs:
-                col1, col2 = st.columns([4, 1])
-                col1.caption(p.name[:40])
-                if col2.button("🗑️", key=f"del_{p.name}"):
-                    p.unlink()
-                    st.rerun()
-
-        if st.button("🔄 문헌 학습 시작", use_container_width=True):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def on_progress(current, total, name):
-                progress_bar.progress(current / total)
-                status_text.text(f"처리 중: {name[:30]}...")
-
-            with st.spinner("PDF 분석 중..."):
-                indexed, errors = library.index_folder(str(PDF_DIR), on_progress)
-
-            progress_bar.empty()
-            status_text.empty()
-            st.success(f"✅ {len(indexed)}개 논문 학습 완료!")
-            if errors:
-                with st.expander(f"⚠️ 오류 {len(errors)}건"):
-                    for e in errors:
-                        st.text(e)
-            st.rerun()
-
-    st.divider()
-
-    if st.button("🗑️ 전체 초기화 (PDF + 인덱스)", use_container_width=True, type="secondary"):
-        st.session_state.confirm_reset = True
-
-    if st.session_state.get("confirm_reset"):
-        st.warning("정말 삭제할까요? 모든 PDF와 학습 데이터가 사라져요.")
-        col1, col2 = st.columns(2)
-        if col1.button("✅ 확인", use_container_width=True):
-            import shutil
-            for f in PDF_DIR.glob("*.pdf"):
-                f.unlink()
-            if DB_DIR.exists():
-                shutil.rmtree(DB_DIR)
-                DB_DIR.mkdir(parents=True, exist_ok=True)
-            get_library.clear()
-            st.session_state.confirm_reset = False
-            st.rerun()
-        if col2.button("❌ 취소", use_container_width=True):
-            st.session_state.confirm_reset = False
-            st.rerun()
 
     st.divider()
 
@@ -499,49 +493,104 @@ with st.sidebar:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ── 단락 작성 (RAG) ───────────────────────────────────────────
-if mode == "📚 단락 작성 (RAG)":
-    st.subheader("📚 참고문헌 기반 단락 작성")
-    if not library.is_ready():
-        st.warning("먼저 사이드바에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
-    else:
-        topic = st.text_input("작성할 주제를 입력하세요",
-                              placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향")
-        col1, col2 = st.columns(2)
-        with col1:
-            style = st.selectbox("단락 유형",
-                                 ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"])
-        with col2:
-            top_k = st.slider("참고할 논문 수", 3, 8, 5)
+# ── 단락 작성 · 논문 분석 (통합) ──────────────────────────────
+if mode == "📚 단락 작성 · 논문 분석":
+    st.subheader("📚 참고문헌 기반 단락 작성 · 논문 분석")
 
-        rag_style_profile = load_style_profile(str(STYLE_PROFILE))
-        use_my_style_rag = st.checkbox(
-            "🖊️ 내 스타일로 작성",
-            value=bool(rag_style_profile),
-            disabled=not rag_style_profile,
-            help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not rag_style_profile else "내 문체·관점을 반영해 작성합니다.",
-        )
+    # 참고문헌 라이브러리 (업로드 + 학습 + 관리) — 이 모드 안에 배치
+    with st.container(border=True):
+        st.markdown("##### 📁 참고문헌 라이브러리")
+        render_library_manager()
 
-        if st.button("✍️ 단락 작성", use_container_width=True, disabled=not topic):
-            with st.spinner("관련 문헌 검색 중..."):
-                results = library.search(topic, top_k=top_k)
+    tab_write, tab_analyze = st.tabs(["✍️ 단락 작성", "📄 논문 PDF 분석"])
 
-            if not results:
-                st.error("관련 문헌을 찾지 못했어요.")
-            else:
-                with st.expander(f"🔍 검색된 참고문헌 {len(results)}개", expanded=False):
-                    for r in results:
-                        st.markdown(f"**{r['source']}** (관련도: {r['score']:.2f})")
-                        st.caption(r["text"][:200] + "...")
-                        st.divider()
+    with tab_write:
+        if not library.is_ready():
+            st.warning("먼저 위에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
+        else:
+            topic = st.text_input("작성할 주제를 입력하세요",
+                                  placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향")
+            col1, col2 = st.columns(2)
+            with col1:
+                style = st.selectbox("단락 유형",
+                                     ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"])
+            with col2:
+                top_k = st.slider("참고할 논문 수", 3, 8, 5)
 
-                with st.spinner("단락 작성 중..."):
-                    applied_profile = rag_style_profile if use_my_style_rag else None
-                    paragraph = write_paragraph_with_refs(topic, style, results, applied_profile)
+            rag_style_profile = load_style_profile(str(STYLE_PROFILE))
+            use_my_style_rag = st.checkbox(
+                "🖊️ 내 스타일로 작성",
+                value=bool(rag_style_profile),
+                disabled=not rag_style_profile,
+                help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not rag_style_profile else "내 문체·관점을 반영해 작성합니다.",
+            )
 
-                st.markdown("### 작성된 단락")
-                st.markdown(paragraph)
-                export_buttons(paragraph, topic, "rag")
+            if st.button("✍️ 단락 작성", use_container_width=True, disabled=not topic):
+                with st.spinner("관련 문헌 검색 중..."):
+                    results = library.search(topic, top_k=top_k)
+
+                if not results:
+                    st.error("관련 문헌을 찾지 못했어요.")
+                else:
+                    with st.expander(f"🔍 검색된 참고문헌 {len(results)}개", expanded=False):
+                        for r in results:
+                            st.markdown(f"**{r['source']}** (관련도: {r['score']:.2f})")
+                            st.caption(r["text"][:200] + "...")
+                            st.divider()
+
+                    with st.spinner("단락 작성 중..."):
+                        applied_profile = rag_style_profile if use_my_style_rag else None
+                        paragraph = write_paragraph_with_refs(topic, style, results, applied_profile)
+
+                    st.markdown("### 작성된 단락")
+                    st.markdown(paragraph)
+                    export_buttons(paragraph, topic, "rag")
+
+    with tab_analyze:
+        st.caption("업로드한 논문을 골라 요약·분석해요. (위 라이브러리에 올린 PDF를 사용하거나 새로 올릴 수 있어요)")
+        lib_pdfs = list(PDF_DIR.glob("*.pdf"))
+        pdf_source = None
+        if lib_pdfs:
+            pick = st.selectbox("분석할 논문 선택",
+                                ["(직접 업로드)"] + [p.name for p in lib_pdfs])
+            if pick != "(직접 업로드)":
+                pdf_source = PDF_DIR / pick
+        one_off = st.file_uploader("또는 분석할 논문 PDF 업로드", type="pdf", key="analyze_pdf")
+
+        analyze_option = st.selectbox("분석 유형 선택",
+            ["핵심 내용 요약", "연구 방법 분석", "이론적 배경 정리", "연구 결과 요약", "비판적 검토"])
+
+        if st.button("분석 시작", use_container_width=True, disabled=not (pdf_source or one_off)):
+            try:
+                if one_off:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        tmp.write(one_off.read())
+                        tmp_path = tmp.name
+                    with st.spinner("PDF 읽는 중..."):
+                        pdf_text = extract_pdf_text(tmp_path)
+                    os.unlink(tmp_path)
+                else:
+                    with st.spinner("PDF 읽는 중..."):
+                        pdf_text = extract_pdf_text(str(pdf_source))
+            except Exception as e:
+                pdf_text = ""
+                st.error(f"❌ PDF를 읽지 못했어요: {e}")
+            if pdf_text.strip():
+                st.success(f"PDF 로드 완료 ({len(pdf_text):,}자)")
+                prompt = f"다음 논문을 '{analyze_option}' 관점에서 분석해주세요:\n\n{pdf_text[:8000]}"
+                with st.spinner("분석 중..."):
+                    analysis_out = chat_with_claude([{"role": "user", "content": prompt}])
+                st.session_state["pdf_analysis"] = {
+                    "name": (one_off.name if one_off else pdf_source.name),
+                    "option": analyze_option, "result": analysis_out,
+                }
+        _pa = st.session_state.get("pdf_analysis")
+        if _pa:
+            st.markdown(f"### 분석 결과 — {_pa['name']} · {_pa['option']}")
+            st.markdown(_pa["result"])
+            st.download_button("📋 분석 저장 (.txt)", _pa["result"],
+                               file_name=f"{_pa['name'][:20]}_분석.txt",
+                               mime="text/plain", key="pdf_analysis_dl")
 
 # ── 인용 자동 삽입 ────────────────────────────────────────────
 elif mode == "✒️ 인용 자동 삽입":
@@ -556,7 +605,7 @@ elif mode == "✒️ 인용 자동 삽입":
     use_external = cite_source.startswith("🌐")
 
     if not use_external and not library.is_ready():
-        st.warning("먼저 사이드바에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요.")
+        st.warning("먼저 '📚 단락 작성 · 논문 분석' 모드에서 PDF를 업로드하고 '문헌 학습 시작'을 눌러주세요. (또는 위에서 🌐 외부 검색을 선택하세요)")
     else:
         draft = st.text_area("초안 텍스트를 입력하세요", height=250,
                              placeholder="인용을 넣고 싶은 글을 여기에 붙여넣으세요...")
@@ -1194,23 +1243,6 @@ elif mode == "📊 데이터 분석 설계":
                 delete_analysis(PROJ_DIR, ridx)
                 st.rerun()
 
-# ── PDF 분석 ─────────────────────────────────────────────────
-elif mode == "📄 PDF 분석":
-    uploaded_file = st.file_uploader("분석할 논문 PDF를 업로드하세요", type="pdf")
-    if uploaded_file:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_file.read())
-            tmp_path = tmp.name
-        with st.spinner("PDF 읽는 중..."):
-            pdf_text = extract_pdf_text(tmp_path)
-        os.unlink(tmp_path)
-        st.success(f"PDF 로드 완료 ({len(pdf_text)}자)")
-        analyze_option = st.selectbox("분석 유형 선택",
-            ["핵심 내용 요약", "연구 방법 분석", "이론적 배경 정리", "연구 결과 요약", "비판적 검토"])
-        if st.button("분석 시작"):
-            prompt = f"다음 논문을 '{analyze_option}' 관점에서 분석해주세요:\n\n{pdf_text[:8000]}"
-            st.session_state.messages.append({"role": "user", "content": prompt})
-
 # ── 논문 구조 설계 ────────────────────────────────────────────
 elif mode == "🏗️ 논문 구조 설계":
     st.subheader("논문 구조 설계")
@@ -1491,7 +1523,7 @@ elif mode == "🔖 참고문헌 변환":
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
-if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "🔖 참고문헌 변환"]:
+if mode in ["💬 자유 질문", "🏗️ 논문 구조 설계", "🔖 참고문헌 변환"]:
     for msg in st.session_state.messages:
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":
