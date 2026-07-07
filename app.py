@@ -15,7 +15,7 @@ from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown, to_word_redline, to_hwpx_redline, diff_segments
 import inplace_redline as ir
-from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
+from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats, load_codebook_text
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
     run_chisquare, run_cronbach, run_regression, run_hlm,
@@ -774,6 +774,39 @@ elif mode == "📊 데이터 분석 설계":
         help="어떤 연구인지 간단히 설명하면 더 정확한 제안을 드릴 수 있어요",
     )
 
+    # ── 코딩북 (변수 설명서) — 프로젝트별 영구 저장 ─────────
+    CODEBOOK_FILE = PROJ_DIR / "codebook.txt"
+    _cb_exists = CODEBOOK_FILE.exists()
+    with st.expander("📖 코딩북 (변수 설명서)" + (" — 등록됨 ✅" if _cb_exists else " — 올리면 분석 정확도가 크게 올라가요"),
+                     expanded=False):
+        st.caption("변수명이 Q1, V3처럼 돼 있으면 AI가 의미를 알 수 없어요. "
+                   "문항 내용·값 의미(예: 성별 1=남, 2=여)가 담긴 코딩북을 올리면 "
+                   "설계 제안·분석 실행·결과 해석 모두 변수의 실제 의미를 반영합니다. "
+                   "이 프로젝트에 계속 저장돼요. (SPSS .sav는 레이블이 내장돼 있어 자동 반영)")
+        cb_up = st.file_uploader(
+            "코딩북 업로드",
+            type=["xlsx", "xls", "csv", "txt", "docx", "hwp", "hwpx", "pdf"],
+            key="codebook_up",
+        )
+        if cb_up:
+            try:
+                _cb_text = load_codebook_text(cb_up)
+                if _cb_text.strip():
+                    CODEBOOK_FILE.write_text(_cb_text, encoding="utf-8")
+                    st.success(f"✅ 코딩북 저장됨 ({len(_cb_text):,}자)")
+                else:
+                    st.warning("파일에서 내용을 추출하지 못했어요.")
+            except Exception as e:
+                st.error(f"❌ 코딩북을 읽지 못했어요: {e}")
+        if CODEBOOK_FILE.exists():
+            _cb_preview = CODEBOOK_FILE.read_text(encoding="utf-8")
+            st.text(_cb_preview[:800] + ("..." if len(_cb_preview) > 800 else ""))
+            if st.button("🗑️ 코딩북 삭제", key="cb_del"):
+                CODEBOOK_FILE.unlink()
+                st.rerun()
+
+    codebook_text = CODEBOOK_FILE.read_text(encoding="utf-8") if CODEBOOK_FILE.exists() else ""
+
     if uploaded_data:
         try:
             with st.spinner("파일 읽는 중..."):
@@ -809,10 +842,15 @@ elif mode == "📊 데이터 분석 설계":
                 context_line = f"\n연구 맥락: {research_context}" if research_context else ""
                 data_type_label = "정량(설문/측정) 데이터" if data_type == "quantitative" else "질적(인터뷰) 데이터"
 
+                codebook_section = (
+                    f"\n\n## 코딩북 (변수의 실제 의미 — 반드시 반영할 것)\n{codebook_text[:6000]}"
+                    + ("\n(코딩북이 길어 일부만 표시)" if len(codebook_text) > 6000 else "")
+                ) if codebook_text else ""
+
                 prompt = f"""다음 {data_type_label}의 구조를 분석하여 {analysis_goal}을 제안해주세요.{context_line}
 
 ## 데이터 구조
-{summary}
+{summary}{codebook_section}
 
 제안 지침:
 1. **연구문제**: 이 데이터로 탐구할 수 있는 구체적인 연구문제 3~5개를 제안하세요.
@@ -852,7 +890,7 @@ elif mode == "📊 데이터 분석 설계":
 - lcsm: waves(시점 순서 변수명 배열), group(선택, 다집단 비교)
 - lca: cols(지표 변수명 배열)
 
-규칙: 변수명은 [데이터 구조]의 열 이름과 정확히 일치. 실행 불가한 제안(SEM 등)은 JSON에서 제외. 최대 6개. "설명"은 한 줄 한국어."""
+규칙: 변수명은 [데이터 구조]의 열 이름과 정확히 일치 (코딩북의 문항 설명이 아니라 실제 열 이름). 실행 불가한 제안(SEM 등)은 JSON에서 제외. 최대 6개. "설명"은 코딩북의 변수 의미를 반영한 한 줄 한국어."""
 
                 with st.spinner("Claude가 분석 설계 중..."):
                     result = chat_with_claude([{"role": "user", "content": prompt}])
@@ -892,7 +930,9 @@ elif mode == "📊 데이터 분석 설계":
                 def _interp_stats(res_summary):
                     """실행 결과를 논문용 결과 문장으로 해석 (수동/제안 실행 공용)"""
                     _ctx = f"\n연구 맥락: {research_context}" if research_context else ""
-                    _p = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{_ctx}
+                    _cb = (f"\n\n## 코딩북 (변수의 실제 의미 — 해석에 반영할 것)\n{codebook_text[:3000]}"
+                           if codebook_text else "")
+                    _p = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{_ctx}{_cb}
 
 ## 분석 결과
 {res_summary}

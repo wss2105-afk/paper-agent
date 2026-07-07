@@ -124,6 +124,40 @@ def extract_hwp_text(file_like):
         ole.close()
 
 
+def load_codebook_text(uploaded_file):
+    """코딩북(변수 설명서) 파일에서 텍스트 추출.
+    Excel/CSV는 표 그대로, Word는 문단+표, 한글/PDF/텍스트도 지원."""
+    name = uploaded_file.name.lower()
+    if name.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(uploaded_file)
+        return df.to_string(index=False)
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        return df.to_string(index=False)
+    if name.endswith(".docx"):
+        from docx import Document
+        doc = Document(uploaded_file)
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for t in doc.tables:  # 코딩북은 표 형태가 많음
+            for row in t.rows:
+                parts.append(" | ".join(c.text.strip() for c in row.cells))
+        return "\n".join(parts)
+    if name.endswith(".hwpx"):
+        return extract_hwpx_text(uploaded_file)
+    if name.endswith(".hwp"):
+        return extract_hwp_text(uploaded_file)
+    if name.endswith(".pdf"):
+        import pdfplumber
+        text = ""
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page in pdf.pages[:30]:
+                t = page.extract_text()
+                if t:
+                    text += t + "\n"
+        return text
+    return uploaded_file.read().decode("utf-8", errors="ignore")
+
+
 def load_file(uploaded_file):
     """Excel, SPSS, CSV, 텍스트, Word, 한글(HWP/HWPX) 파일 로드"""
     name = uploaded_file.name.lower()
