@@ -348,6 +348,18 @@ with st.sidebar:
 
     # ── 내 논문 스타일 ──────────────────────────────────────────
     st.subheader("🖊️ 내 논문 스타일")
+    # 저장 경로 진단: 볼륨이 실제로 붙어 영구 저장 중인지 확인
+    _vol_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH")
+    _persistent = bool(_vol_mount) and str(DATA_DIR).startswith(_vol_mount)
+    with st.expander("💾 저장소 상태", expanded=False):
+        st.caption(f"저장 경로: `{DATA_DIR}`")
+        if _persistent:
+            st.success("영구 볼륨에 저장 중 — 재배포·재시작해도 유지됩니다.")
+        elif _vol_mount:
+            st.warning(f"볼륨({_vol_mount})은 있으나 저장 경로가 볼륨 밖입니다. "
+                       "DATA_DIR을 볼륨 경로로 맞추세요.")
+        else:
+            st.error("임시 저장 상태 — 볼륨 미마운트. 재배포 시 데이터가 삭제됩니다.")
     profile = load_style_profile(str(STYLE_PROFILE))
     if profile:
         st.success("✅ 스타일 프로필 분석 완료")
