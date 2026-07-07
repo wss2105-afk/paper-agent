@@ -1,4 +1,5 @@
 import html as _html
+import json
 import os
 import re
 import tempfile
@@ -18,7 +19,8 @@ from data_analyzer import load_file, summarize_dataframe, summarize_interview, g
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
     run_chisquare, run_cronbach, run_regression, run_hlm,
-    run_lca, run_sem, run_sem_multigroup, SEM_EXAMPLE,
+    run_lca, run_sem, run_sem_multigroup, run_lcsm, run_lcsm_multigroup,
+    SEM_EXAMPLE,
 )
 from style_analyzer import (
     load_my_papers, build_style_prompt, save_style_profile,
@@ -826,14 +828,54 @@ elif mode == "📊 데이터 분석 설계":
 
 교육공학 연구 맥락에서 답변해주세요."""
 
+                if data_type == "quantitative":
+                    prompt += """
+
+마지막에, 위에서 제안한 분석 중 아래 도구로 바로 실행 가능한 것을 JSON으로 정리하세요. 반드시 이 형식으로:
+
+[실행 스펙]
+```json
+[
+  {"method": "ttest_ind", "dv": "변수명", "group": "변수명", "설명": "집단에 따른 ○○ 차이 (독립표본 t검정)"}
+]
+```
+
+사용 가능한 method와 인자:
+- ttest_ind: dv(수치형), group(2개 집단)
+- ttest_rel: var1, var2 (짝지은 수치형)
+- anova: dv, group(3개 이상 집단)
+- correlation: cols(수치형 변수명 배열, 2개 이상)
+- chisquare: var1, var2 (범주형)
+- cronbach: cols(같은 척도 문항 배열)
+- regression: dv, ivs(독립변수명 배열)
+- hlm: dv, ivs(배열), group(상위수준 집단변수)
+- lcsm: waves(시점 순서 변수명 배열), group(선택, 다집단 비교)
+- lca: cols(지표 변수명 배열)
+
+규칙: 변수명은 [데이터 구조]의 열 이름과 정확히 일치. 실행 불가한 제안(SEM 등)은 JSON에서 제외. 최대 6개. "설명"은 한 줄 한국어."""
+
                 with st.spinner("Claude가 분석 설계 중..."):
                     result = chat_with_claude([{"role": "user", "content": prompt}])
 
+                design_text, design_specs = result, []
+                _mspec = re.search(r"\[실행 스펙\].*?```json\s*(.*?)```", result, re.S)
+                if _mspec:
+                    try:
+                        design_specs = json.loads(_mspec.group(1))
+                        if not isinstance(design_specs, list):
+                            design_specs = []
+                    except Exception:
+                        design_specs = []
+                    design_text = result[:_mspec.start()].strip()
+                st.session_state["design_result"] = design_text
+                st.session_state["design_specs"] = design_specs if data_type == "quantitative" else []
+
+            if st.session_state.get("design_result"):
                 st.markdown("### 분석 설계 제안")
-                st.markdown(result)
+                st.markdown(st.session_state["design_result"])
                 st.download_button(
                     "📋 분석 설계 저장 (.txt)",
-                    result,
+                    st.session_state["design_result"],
                     file_name="분석설계제안.txt",
                     mime="text/plain",
                 )
@@ -847,6 +889,96 @@ elif mode == "📊 데이터 분석 설계":
                 num_cols = list(data.select_dtypes(include="number").columns)
                 all_cols = list(data.columns)
 
+                def _interp_stats(res_summary):
+                    """실행 결과를 논문용 결과 문장으로 해석 (수동/제안 실행 공용)"""
+                    _ctx = f"\n연구 맥락: {research_context}" if research_context else ""
+                    _p = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{_ctx}
+
+## 분석 결과
+{res_summary}
+
+작성 지침:
+1. APA 스타일 통계치 표기(t, F, χ², β, p, 효과크기 등)를 포함한 학술적 한국어 문장으로 서술하세요.
+2. 효과크기의 실질적 의미를 함께 해석하세요.
+3. 유의하지 않은 결과도 있는 그대로 서술하세요. 결과를 긍정적으로 왜곡하지 마세요.
+4. 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
+5. 마지막에 '해석 시 유의점' 1~2가지를 덧붙이세요."""
+                    with st.spinner("Claude가 결과를 논문 문장으로 작성 중..."):
+                        return chat_with_claude([{"role": "user", "content": _p}])
+
+                def _proposal_fn(spec):
+                    """설계 제안 JSON 스펙 → 실행 함수 (변수 검증 포함). 불가하면 None."""
+                    _m = spec.get("method")
+                    _cols = set(data.columns)
+
+                    def ok(*keys, list_keys=()):
+                        for k in keys:
+                            v = spec.get(k)
+                            if not v or (isinstance(v, str) and v not in _cols):
+                                return False
+                        for k in list_keys:
+                            v = spec.get(k)
+                            if not isinstance(v, list) or not v or not all(c in _cols for c in v):
+                                return False
+                        return True
+
+                    if _m == "ttest_ind" and ok("dv", "group"):
+                        return lambda: run_ttest_ind(data, spec["dv"], spec["group"])
+                    if _m == "ttest_rel" and ok("var1", "var2"):
+                        return lambda: run_ttest_rel(data, spec["var1"], spec["var2"])
+                    if _m == "anova" and ok("dv", "group"):
+                        return lambda: run_anova(data, spec["dv"], spec["group"])
+                    if _m == "correlation" and ok(list_keys=("cols",)):
+                        return lambda: run_correlation(data, spec["cols"],
+                                                       spec.get("corr_method", "pearson"))
+                    if _m == "chisquare" and ok("var1", "var2"):
+                        return lambda: run_chisquare(data, spec["var1"], spec["var2"])
+                    if _m == "cronbach" and ok(list_keys=("cols",)):
+                        return lambda: run_cronbach(data, spec["cols"])
+                    if _m == "regression" and ok("dv", list_keys=("ivs",)):
+                        return lambda: run_regression(data, spec["dv"], spec["ivs"])
+                    if _m == "hlm" and ok("dv", "group", list_keys=("ivs",)):
+                        return lambda: run_hlm(data, spec["dv"], spec["ivs"], spec["group"])
+                    if _m == "lcsm" and ok(list_keys=("waves",)):
+                        if spec.get("group") and spec["group"] in _cols:
+                            return lambda: run_lcsm_multigroup(data, spec["waves"], spec["group"])
+                        return lambda: run_lcsm(data, spec["waves"])
+                    if _m == "lca" and ok(list_keys=("cols",)):
+                        return lambda: run_lca(data, spec["cols"],
+                                               n_classes=int(spec.get("n_classes") or 0))
+                    return None
+
+                _specs = st.session_state.get("design_specs") or []
+                if _specs:
+                    st.markdown("#### ⚡ 제안된 분석 바로 실행")
+                    st.caption("분석 설계에서 제안된 방법을 클릭 한 번으로 같은 데이터에 바로 실행해요. 결과는 아래와 '저장된 분석 결과'에 나타납니다.")
+                    for _pi, _sp in enumerate(_specs[:6]):
+                        _plabel = str(_sp.get("설명") or _sp.get("method", "분석"))
+                        _pfn = _proposal_fn(_sp) if isinstance(_sp, dict) else None
+                        if _pfn is None:
+                            st.caption(f"▫️ {_plabel} — 변수명 불일치로 실행 불가 (아래에서 직접 변수를 선택해 실행하세요)")
+                            continue
+                        if st.button(f"▶️ {_plabel}", key=f"prop_run_{_pi}", use_container_width=True):
+                            _pres = None
+                            try:
+                                with st.spinner("통계 계산 중..."):
+                                    _pres = _pfn()
+                            except ValueError as _ve:
+                                st.error(f"⚠️ {_ve}")
+                            except Exception as _ex:
+                                st.error(f"❌ 분석 실패: {_ex}")
+                            if _pres:
+                                _pint = _interp_stats(_pres["summary"])
+                                st.session_state["stats_run"] = {
+                                    "analysis": _plabel, "result": _pres, "interp": _pint,
+                                }
+                                try:
+                                    save_analysis(PROJ_DIR, _plabel, _pres, _pint,
+                                                  note=uploaded_data.name)
+                                except Exception:
+                                    pass
+                    st.divider()
+
                 analysis = st.selectbox("분석 방법", [
                     "독립표본 t검정 (두 집단 평균 비교)",
                     "대응표본 t검정 (사전·사후 등 짝지은 비교)",
@@ -856,6 +988,7 @@ elif mode == "📊 데이터 분석 설계":
                     "신뢰도 분석 (Cronbach's α)",
                     "회귀분석 (중다회귀)",
                     "다층모형 HLM (임의절편)",
+                    "잠재변화점수 LCSM (사전-사후 변화)",
                     "잠재계층분석 LCA",
                     "구조방정식 SEM",
                 ])
@@ -900,6 +1033,19 @@ elif mode == "📊 데이터 분석 설계":
                                          [c for c in num_cols if c != dv])
                     grp = st.selectbox("상위수준(2수준) 집단변수 — 예: 학교ID, 학급ID", all_cols)
                     run_fn = lambda: run_hlm(data, dv, ivs, grp)
+                elif analysis.startswith("잠재변화점수"):
+                    waves = st.multiselect(
+                        "시점 변수 — 시간 순서대로 선택 (예: 사전점수 → 사후점수 → 추후점수)",
+                        num_cols,
+                        help="선택한 순서가 시간 순서로 사용돼요. 2개(사전-사후)부터 가능합니다.",
+                    )
+                    lcsm_mg = st.selectbox("다집단 비교 (선택)", ["사용 안 함"] + all_cols,
+                                           key="lcsm_mg",
+                                           help="집단변수를 선택하면 집단별 변화량·비례변화를 비교해요.")
+                    if lcsm_mg == "사용 안 함":
+                        run_fn = lambda: run_lcsm(data, waves)
+                    else:
+                        run_fn = lambda: run_lcsm_multigroup(data, waves, lcsm_mg)
                 elif analysis.startswith("잠재계층"):
                     cols = st.multiselect("지표 변수 (2개 이상)", num_cols)
                     meas_label = st.radio("지표 유형",
@@ -943,23 +1089,7 @@ elif mode == "📊 데이터 분석 설계":
                     except Exception as ex:
                         st.error(f"❌ 분석 실패: {ex}")
                     if res:
-                        interp = None
-                        if interpret:
-                            context_line = f"\n연구 맥락: {research_context}" if research_context else ""
-                            interp_prompt = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{context_line}
-
-## 분석 결과
-{res['summary']}
-
-작성 지침:
-1. APA 스타일 통계치 표기(t, F, χ², β, p, 효과크기 등)를 포함한 학술적 한국어 문장으로 서술하세요.
-2. 효과크기의 실질적 의미를 함께 해석하세요.
-3. 유의하지 않은 결과도 있는 그대로 서술하세요. 결과를 긍정적으로 왜곡하지 마세요.
-4. 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
-5. 마지막에 '해석 시 유의점' 1~2가지를 덧붙이세요."""
-                            with st.spinner("Claude가 결과를 논문 문장으로 작성 중..."):
-                                interp = chat_with_claude(
-                                    [{"role": "user", "content": interp_prompt}])
+                        interp = _interp_stats(res["summary"]) if interpret else None
                         st.session_state["stats_run"] = {
                             "analysis": analysis, "result": res, "interp": interp,
                         }

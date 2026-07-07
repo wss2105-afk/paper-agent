@@ -378,6 +378,143 @@ def run_hlm(df, dv, ivs, group_col):
     return {"tables": {"고정효과": coef_tbl, "분산성분": var_tbl}, "summary": summary}
 
 
+# ── 8-1. 잠재변화점수모형 (LCSM) ──────────────────────────────
+
+def run_lcsm(df, wave_cols):
+    """잠재변화점수모형(LCSM). 시점 변수 2개 이상 (순서대로).
+    ※ 단일지표 2시점 LCSM은 관측 변화점수 모형과 수학적으로 동치이므로
+      동일한 추정치를 직접 계산한다. 각 구간별로:
+      - 변화량 평균(Δ mean)과 유의성, 변화 분산
+      - 비례 변화(proportional change): Δ ~ 이전 시점 회귀"""
+    if len(wave_cols) < 2:
+        raise ValueError("LCSM에는 시점 변수 2개 이상이 필요해요. (사전·사후 등 시간 순서대로 선택)")
+    _numeric_check(df, wave_cols)
+    sub, n = _clean(df, wave_cols)
+
+    desc = pd.DataFrame({
+        "시점": list(wave_cols),
+        "평균": [round(sub[c].mean(), 3) for c in wave_cols],
+        "표준편차": [round(sub[c].std(), 3) for c in wave_cols],
+    })
+
+    change_rows, prop_rows, lines = [], [], []
+    for i in range(len(wave_cols) - 1):
+        t0, t1 = wave_cols[i], wave_cols[i + 1]
+        d = sub[t1] - sub[t0]
+        t_stat, p = stats.ttest_1samp(d, 0)
+        dz = d.mean() / d.std() if d.std() > 0 else np.nan
+        lr = stats.linregress(sub[t0], d)
+        z_prop = lr.slope / lr.stderr if lr.stderr > 0 else np.nan
+        label = f"{t0} → {t1}"
+        change_rows.append({
+            "구간": label, "Δ 평균": round(d.mean(), 3),
+            "SE": round(d.std() / np.sqrt(n), 3),
+            "t": round(t_stat, 3), "p": round(p, 4),
+            "효과크기 dz": round(dz, 3), "Δ 분산": round(d.var(ddof=1), 3),
+        })
+        prop_rows.append({
+            "구간": label, "비례변화 β (Δ ~ 이전시점)": round(lr.slope, 3),
+            "SE": round(lr.stderr, 4), "z": round(z_prop, 3),
+            "p": round(lr.pvalue, 4),
+        })
+        lines.append(
+            f"- {label}: Δ평균={d.mean():.3f} (t={t_stat:.3f}, p {_p_str(p)}, dz={dz:.3f}), "
+            f"Δ분산={d.var(ddof=1):.3f}; 비례변화 β={lr.slope:.3f} (p {_p_str(lr.pvalue)}) — "
+            f"{'초기값이 높을수록 변화가 작음(수렴)' if lr.slope < 0 and lr.pvalue < 0.05 else '초기값이 높을수록 변화가 큼(발산)' if lr.slope > 0 and lr.pvalue < 0.05 else '초기값과 변화량의 관련 비유의'}"
+        )
+
+    summary = (
+        f"잠재변화점수모형(LCSM): 시점 {len(wave_cols)}개 ({' → '.join(wave_cols)}), N={n}\n"
+        f"[시점별 기술통계] " + "; ".join(
+            f"{r['시점']}: M={r['평균']}, SD={r['표준편차']}" for r in desc.to_dict('records')) + "\n"
+        f"[변화 구간 분석]\n" + "\n".join(lines) + "\n"
+        f"- 참고: 단일지표 2시점 LCSM은 관측 변화점수 모형과 동치라 추정치가 동일해요. "
+        f"다지표(잠재변수) 또는 3시점 이상 제약 모형(이중변화점수모형 등)이 필요하면 "
+        f"Mplus/lavaan(R) 사용을 권장하며, 논문에는 추정 방식을 명시하세요."
+    )
+    return {"tables": {"시점별 기술통계": desc,
+                       "변화량 (구간별)": pd.DataFrame(change_rows),
+                       "비례 변화": pd.DataFrame(prop_rows)},
+            "summary": summary}
+
+
+def run_lcsm_multigroup(df, wave_cols, group_col):
+    """다집단 LCSM: 집단별 변화량·비례변화 추정 + 집단 간 차이 검정.
+    - Δ평균 차이: 독립표본 t검정(변화점수 기준)
+    - 비례변화 β 차이: z검정(critical ratio)"""
+    if len(wave_cols) < 2:
+        raise ValueError("LCSM에는 시점 변수 2개 이상이 필요해요.")
+    _numeric_check(df, wave_cols)
+    sub, n = _clean(df, list(wave_cols) + [group_col])
+    levels = [lv for lv in sub[group_col].unique()]
+    if len(levels) < 2:
+        raise ValueError(f"집단변수 '{group_col}'의 수준이 {len(levels)}개예요. 2개 이상 필요해요.")
+    if len(levels) > 4:
+        raise ValueError(f"집단이 {len(levels)}개예요. 4개 이하를 권장해요.")
+
+    group_rows, diff_rows, lines = [], [], []
+    per_group = {}
+    for lv in levels:
+        g = sub[sub[group_col] == lv]
+        if len(g) < 10:
+            raise ValueError(f"집단 '{lv}'의 사례가 {len(g)}개뿐이에요. 집단별 최소 10 사례가 필요해요.")
+        stats_g = {}
+        for i in range(len(wave_cols) - 1):
+            t0, t1 = wave_cols[i], wave_cols[i + 1]
+            d = g[t1] - g[t0]
+            t_stat, p = stats.ttest_1samp(d, 0)
+            lr = stats.linregress(g[t0], d)
+            label = f"{t0} → {t1}"
+            group_rows.append({
+                "집단": str(lv), "구간": label, "N": len(g),
+                "Δ 평균": round(d.mean(), 3), "t": round(t_stat, 3),
+                "p": round(p, 4),
+                "비례변화 β": round(lr.slope, 3), "β의 p": round(lr.pvalue, 4),
+            })
+            stats_g[label] = {"d": d, "slope": lr.slope, "se": lr.stderr}
+        per_group[lv] = stats_g
+
+    for i in range(len(wave_cols) - 1):
+        label = f"{wave_cols[i]} → {wave_cols[i + 1]}"
+        for a in range(len(levels)):
+            for b in range(a + 1, len(levels)):
+                g1, g2 = per_group[levels[a]][label], per_group[levels[b]][label]
+                # Δ평균 차이: Welch t
+                t_d, p_d = stats.ttest_ind(g1["d"], g2["d"], equal_var=False)
+                # 비례변화 차이: z
+                se = np.sqrt(g1["se"] ** 2 + g2["se"] ** 2)
+                z_b = (g1["slope"] - g2["slope"]) / se if se > 0 else np.nan
+                p_b = 2 * stats.norm.sf(abs(z_b)) if not np.isnan(z_b) else np.nan
+                pair = f"{levels[a]} vs {levels[b]}"
+                diff_rows.append({
+                    "구간": label, "비교": pair,
+                    "Δ평균 차이": round(g1["d"].mean() - g2["d"].mean(), 3),
+                    "t": round(t_d, 3), "p(Δ평균)": round(p_d, 4),
+                    "β 차이": round(g1["slope"] - g2["slope"], 3),
+                    "z": round(z_b, 3), "p(β)": round(p_b, 4),
+                })
+                lines.append(
+                    f"- {label} ({pair}): Δ평균차={g1['d'].mean() - g2['d'].mean():.3f} "
+                    f"(t={t_d:.3f}, p {_p_str(p_d)} → {'유의' if p_d < 0.05 else '비유의'}); "
+                    f"β차={g1['slope'] - g2['slope']:.3f} (z={z_b:.3f}, p {_p_str(p_b)} → "
+                    f"{'유의' if p_b < 0.05 else '비유의'})"
+                )
+
+    summary = (
+        f"다집단 LCSM: 시점 {len(wave_cols)}개 ({' → '.join(wave_cols)}), "
+        f"집단변수={group_col} ({len(levels)}개: {', '.join(map(str, levels))}), N={n}\n"
+        f"[집단별 변화]\n" + "\n".join(
+            f"- [{r['집단']}] {r['구간']}: Δ평균={r['Δ 평균']} (p={r['p']}), β={r['비례변화 β']} (p={r['β의 p']})"
+            for r in group_rows) + "\n"
+        f"[집단 간 차이 검정]\n" + "\n".join(lines) + "\n"
+        f"- 참고: 관측 변화점수 기반 추정(단일지표 2시점 LCSM과 동치). "
+        f"정식 다집단 SEM 제약 비교가 필요하면 Mplus/lavaan을 권장해요."
+    )
+    return {"tables": {"집단별 변화": pd.DataFrame(group_rows),
+                       "집단 간 차이 검정": pd.DataFrame(diff_rows)},
+            "summary": summary}
+
+
 # ── 9. 잠재계층분석 (LCA) ─────────────────────────────────────
 
 def run_lca(df, cols, n_classes=0, max_classes=5, measurement="continuous"):
