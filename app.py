@@ -21,7 +21,12 @@ from sjr_data import quartile_badge
 
 load_dotenv()
 
-DATA_DIR = os.getenv("DATA_DIR", "./data")
+# 저장 경로 결정 우선순위:
+#   1) DATA_DIR (직접 지정)
+#   2) RAILWAY_VOLUME_MOUNT_PATH (볼륨 붙이면 Railway가 자동 주입)
+#   3) ./data (로컬 기본값)
+# → 볼륨만 마운트돼 있으면 DATA_DIR 설정을 깜빡해도 영구 저장됨.
+DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "./data"
 PDF_DIR        = Path(DATA_DIR) / "pdfs"
 DB_DIR         = Path(DATA_DIR) / "reference_db"
 MY_PAPERS_DIR  = Path(DATA_DIR) / "my_papers"
