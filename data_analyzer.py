@@ -1,9 +1,44 @@
 import io
+import re
+import zipfile
+from xml.etree import ElementTree
+
 import pandas as pd
 
 
+def extract_hwpx_text(file_like):
+    """HWPX(한글 표준 XML 포맷) 본문 텍스트 추출.
+    HWPX는 zip 압축 안에 Contents/section*.xml 로 본문을 담는다.
+    문서 순서대로 순회하며 문단(<hp:p>) 단위로 텍스트(<hp:t>)를 모은다."""
+    try:
+        zf = zipfile.ZipFile(file_like)
+    except zipfile.BadZipFile:
+        raise ValueError(
+            "HWPX 형식이 아니에요. 구형 .hwp 파일이면 한글에서 "
+            "'다른 이름으로 저장 → HWPX'로 저장한 뒤 올려주세요."
+        )
+    with zf:
+        sections = sorted(
+            n for n in zf.namelist()
+            if re.match(r"Contents/section\d+\.xml$", n)
+        )
+        if not sections:
+            raise ValueError("HWPX 본문(section XML)을 찾을 수 없어요. 파일이 손상됐을 수 있어요.")
+        paras = [""]
+        for sec_name in sections:
+            root = ElementTree.fromstring(zf.read(sec_name))
+            for el in root.iter():
+                tag = el.tag.split("}")[-1]
+                if tag == "p":  # 새 문단 (표 안 문단 포함, 문서 순서 유지)
+                    if paras[-1].strip():
+                        paras.append("")
+                elif tag == "t" and el.text:
+                    paras[-1] += el.text
+    return "\n".join(p for p in paras if p.strip())
+
+
 def load_file(uploaded_file):
-    """Excel, SPSS, CSV, 텍스트, Word 파일 로드"""
+    """Excel, SPSS, CSV, 텍스트, Word, HWPX 파일 로드"""
     name = uploaded_file.name.lower()
 
     if name.endswith(".sav"):
@@ -30,10 +65,14 @@ def load_file(uploaded_file):
         text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
         return "qualitative", text, None
 
+    elif name.endswith(".hwpx"):
+        text = extract_hwpx_text(uploaded_file)
+        return "qualitative", text, None
+
     else:
         raise ValueError(
             "지원 형식: Excel(.xlsx/.xls), SPSS(.sav), CSV(.csv), "
-            "텍스트(.txt), Word(.docx)"
+            "텍스트(.txt), Word(.docx), 한글(.hwpx)"
         )
 
 

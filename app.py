@@ -735,8 +735,8 @@ elif mode == "📊 데이터 분석 설계":
 
     uploaded_data = st.file_uploader(
         "데이터 파일 업로드",
-        type=["xlsx", "xls", "sav", "csv", "txt", "docx"],
-        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx) 지원",
+        type=["xlsx", "xls", "sav", "csv", "txt", "docx", "hwpx"],
+        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwpx) 지원",
     )
     research_context = st.text_input(
         "연구 맥락 (선택)",
@@ -1029,17 +1029,21 @@ elif mode == "✍️ 글쓰기 교정":
     st.subheader("글쓰기 교정")
 
     corr_file = st.file_uploader(
-        "Word(.docx) 또는 텍스트(.txt) 파일 업로드 (선택)",
-        type=["docx", "txt"],
-        help="파일을 올리면 내용을 추출해 교정해요. 아래에 직접 입력해도 됩니다.",
+        "Word(.docx), 한글(.hwpx), 텍스트(.txt) 파일 업로드 (선택)",
+        type=["docx", "hwpx", "txt"],
+        help="파일을 올리면 내용을 추출해 교정해요. 아래에 직접 입력해도 됩니다. 구형 .hwp는 한글에서 '다른 이름으로 저장 → HWPX'로 저장 후 올려주세요.",
     )
     corr_source = None
     if corr_file:
         try:
-            if corr_file.name.lower().endswith(".docx"):
+            _cname = corr_file.name.lower()
+            if _cname.endswith(".docx"):
                 from docx import Document
                 _doc = Document(corr_file)
                 corr_source = "\n".join(p.text for p in _doc.paragraphs if p.text.strip())
+            elif _cname.endswith(".hwpx"):
+                from data_analyzer import extract_hwpx_text
+                corr_source = extract_hwpx_text(corr_file)
             else:
                 corr_source = corr_file.read().decode("utf-8", errors="ignore")
         except Exception as e:
