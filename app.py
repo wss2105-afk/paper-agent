@@ -528,9 +528,22 @@ if mode == "📚 단락 작성 · 논문 분석":
             if st.button("✍️ 단락 작성", use_container_width=True, disabled=not topic):
                 with st.spinner("관련 문헌 검색 중..."):
                     results = library.search(topic, top_k=top_k)
+                    if not results:
+                        # 논문이 다른 언어(예: 영어)일 수 있어 주제를 번역해 재검색
+                        try:
+                            alt = chat_with_claude([{"role": "user", "content":
+                                f"다음 논문 주제를 검색용으로 번역해줘. 한국어면 영어로, 영어면 한국어로. "
+                                f"핵심 키워드 위주로, 번역문만 출력:\n{topic}"}])
+                            alt_results = library.search(alt.strip(), top_k=top_k)
+                            if alt_results:
+                                results = alt_results
+                                st.caption(f"💡 '{alt.strip()}'(으)로도 검색했어요 (업로드 논문 언어에 맞춰).")
+                        except Exception:
+                            pass
 
                 if not results:
-                    st.error("관련 문헌을 찾지 못했어요.")
+                    st.error("관련 문헌을 찾지 못했어요. 주제 키워드가 업로드한 논문의 표현·언어와 맞는지 확인해보세요. "
+                             "(예: 논문이 영어면 영어 키워드로, 또는 더 일반적인 용어로)")
                 else:
                     with st.expander(f"🔍 검색된 참고문헌 {len(results)}개", expanded=False):
                         for r in results:
