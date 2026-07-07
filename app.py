@@ -1,4 +1,5 @@
 import html as _html
+import io
 import json
 import os
 import re
@@ -46,7 +47,10 @@ DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or ".
 # ── 논문 프로젝트(워크스페이스) ───────────────────────────────
 # 참고문헌 PDF / RAG 인덱스 / 분석 결과는 프로젝트별로 분리.
 # 내 문체 프로필은 사람에 속하므로 전역 유지.
-migrate_legacy(DATA_DIR)
+try:
+    migrate_legacy(DATA_DIR)
+except Exception:
+    pass  # 레거시 이전 실패가 앱 구동을 막지 않도록 (다음 실행에 재시도)
 PROJECTS = load_projects(DATA_DIR)
 if st.session_state.get("project_id") not in [p["id"] for p in PROJECTS]:
     st.session_state["project_id"] = PROJECTS[0]["id"]
