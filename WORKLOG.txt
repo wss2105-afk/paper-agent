@@ -181,6 +181,14 @@
     method 10종 매핑(ttest_ind/rel, anova, correlation, chisquare, cronbach,
     regression, hlm, lcsm(+group), lca). 깨진 JSON은 빈 스펙 폴백.
   · 수동 실행 해석 로직을 _interp_stats 공용 헬퍼로 통합.
+- [코딩북 지원] 커밋 67c7c9e. (사용자: "코딩북을 읽어야 변인이 뭔지 알지")
+  · 데이터 분석 설계에 "📖 코딩북" 업로더 — xlsx/csv/docx(표 포함)/hwp/hwpx/
+    pdf/txt 지원. data_analyzer.load_codebook_text().
+  · PROJ_DIR/codebook.txt로 프로젝트별 영구 저장(재업로드 불필요), 삭제 버튼.
+  · 주입 위치 3곳: 분석 설계 프롬프트(6000자 한도) + 실행 스펙 JSON 생성
+    ("설명"에 변수 의미 반영, 인자는 실제 열 이름) + 결과 해석(3000자 한도).
+  · 참고: SPSS .sav는 변수 레이블 내장 → summarize_dataframe이 이미 반영 중.
+  · 검증: txt/xlsx/docx(표) 추출 테스트 통과.
 
 ---- 2026-06-09 (추가 세션) ----
 - [글쓰기 교정 모드에 내 문체 프로필 적용 추가]
