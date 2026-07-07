@@ -202,6 +202,10 @@ def apply_hwpx(state, corrected_texts):
             t_el.text = text.replace("\n", " ")
             p_el.insert(insert_at, run_el)
             insert_at += 1
+        # 줄 배치 캐시(linesegarray) 제거 — 텍스트가 바뀌었는데 옛 배치 정보가
+        # 남아 있으면 한글이 글자를 옛 좌표에 그려 겹쳐 보인다. 지우면 열 때 재계산.
+        for seg in p_el.findall(f"{_HP}linesegarray"):
+            p_el.remove(seg)
         n_changed += 1
 
     out = io.BytesIO()
