@@ -13,6 +13,11 @@ from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
+from stats_runner import (
+    run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
+    run_chisquare, run_cronbach, run_regression, run_hlm,
+    run_lca, run_sem, SEM_EXAMPLE,
+)
 from style_analyzer import (
     load_my_papers, build_style_prompt, save_style_profile,
     load_style_profile, build_style_instruction
@@ -753,6 +758,142 @@ elif mode == "📊 데이터 분석 설계":
                     file_name="분석설계제안.txt",
                     mime="text/plain",
                 )
+
+            # ── 통계 직접 실행 ────────────────────────────────
+            if data_type == "quantitative":
+                st.divider()
+                st.subheader("📈 통계 직접 실행")
+                st.caption("설계 제안에서 그치지 않고, 선택한 분석을 업로드한 데이터로 바로 계산하고 논문용 결과 문장까지 작성해드려요.")
+
+                num_cols = list(data.select_dtypes(include="number").columns)
+                all_cols = list(data.columns)
+
+                analysis = st.selectbox("분석 방법", [
+                    "독립표본 t검정 (두 집단 평균 비교)",
+                    "대응표본 t검정 (사전·사후 등 짝지은 비교)",
+                    "일원분산분석 ANOVA (3개 이상 집단)",
+                    "상관분석 (Pearson/Spearman)",
+                    "카이제곱 검정 (범주형 × 범주형)",
+                    "신뢰도 분석 (Cronbach's α)",
+                    "회귀분석 (중다회귀)",
+                    "다층모형 HLM (임의절편)",
+                    "잠재계층분석 LCA",
+                    "구조방정식 SEM",
+                ])
+
+                run_fn = None
+                if not num_cols and not analysis.startswith("카이제곱"):
+                    st.warning("수치형 변수가 없어 이 분석을 실행할 수 없어요.")
+                elif analysis.startswith("독립표본"):
+                    dv = st.selectbox("종속변수 (수치형)", num_cols)
+                    grp = st.selectbox("집단변수 (정확히 2개 집단)", all_cols)
+                    run_fn = lambda: run_ttest_ind(data, dv, grp)
+                elif analysis.startswith("대응표본"):
+                    v1 = st.selectbox("변수 1 (예: 사전점수)", num_cols)
+                    v2 = st.selectbox("변수 2 (예: 사후점수)", num_cols,
+                                      index=min(1, len(num_cols) - 1))
+                    run_fn = lambda: run_ttest_rel(data, v1, v2)
+                elif analysis.startswith("일원분산분석"):
+                    dv = st.selectbox("종속변수 (수치형)", num_cols)
+                    grp = st.selectbox("집단변수 (3개 이상 집단)", all_cols)
+                    run_fn = lambda: run_anova(data, dv, grp)
+                elif analysis.startswith("상관분석"):
+                    cols = st.multiselect("분석할 변수 (2개 이상)", num_cols,
+                                          default=num_cols[:min(3, len(num_cols))])
+                    method = st.radio("상관계수", ["Pearson", "Spearman"], horizontal=True)
+                    run_fn = lambda: run_correlation(data, cols, method.lower())
+                elif analysis.startswith("카이제곱"):
+                    v1 = st.selectbox("변수 1 (범주형)", all_cols)
+                    v2 = st.selectbox("변수 2 (범주형)", all_cols,
+                                      index=min(1, len(all_cols) - 1))
+                    run_fn = lambda: run_chisquare(data, v1, v2)
+                elif analysis.startswith("신뢰도"):
+                    cols = st.multiselect("같은 척도의 문항들 (2개 이상)", num_cols)
+                    run_fn = lambda: run_cronbach(data, cols)
+                elif analysis.startswith("회귀분석"):
+                    dv = st.selectbox("종속변수", num_cols)
+                    ivs = st.multiselect("독립변수 (1개 이상)",
+                                         [c for c in num_cols if c != dv])
+                    run_fn = lambda: run_regression(data, dv, ivs)
+                elif analysis.startswith("다층모형"):
+                    dv = st.selectbox("종속변수 (1수준)", num_cols)
+                    ivs = st.multiselect("독립변수 (1개 이상)",
+                                         [c for c in num_cols if c != dv])
+                    grp = st.selectbox("상위수준(2수준) 집단변수 — 예: 학교ID, 학급ID", all_cols)
+                    run_fn = lambda: run_hlm(data, dv, ivs, grp)
+                elif analysis.startswith("잠재계층"):
+                    cols = st.multiselect("지표 변수 (2개 이상)", num_cols)
+                    meas_label = st.radio("지표 유형",
+                                          ["연속형 (리커트 평균, 점수 등)", "범주형 (예/아니오, 선택지 등)"],
+                                          horizontal=True)
+                    meas = "continuous" if meas_label.startswith("연속형") else "categorical"
+                    k_label = st.selectbox("계층 수",
+                                           ["자동 (BIC 최적 모형 선택)", "2", "3", "4", "5", "6"])
+                    k_sel = 0 if k_label.startswith("자동") else int(k_label)
+                    max_k = st.slider("탐색할 최대 계층 수", 3, 6, 5,
+                                      help="1부터 이 수까지 모형을 적합해 AIC/BIC로 비교해요.")
+                    run_fn = lambda: run_lca(data, cols, n_classes=k_sel,
+                                             max_classes=max_k, measurement=meas)
+                else:  # SEM
+                    st.caption("사용 가능한 변수: " + ", ".join(num_cols[:30])
+                               + ("..." if len(num_cols) > 30 else ""))
+                    model_spec = st.text_area(
+                        "SEM 모델식 (lavaan 스타일)",
+                        placeholder=SEM_EXAMPLE, height=170,
+                        help="=~ : 잠재변수 정의(측정모형) / ~ : 회귀 경로(구조모형) / ~~ : 공분산. 변수명은 데이터 열 이름과 일치해야 해요.",
+                    )
+                    run_fn = lambda: run_sem(data, model_spec)
+
+                interpret = st.checkbox("🤖 결과를 논문용 문장으로 해석", value=True,
+                                        help="계산된 결과를 APA 표기를 포함한 '연구 결과' 절 문장으로 작성해드려요.")
+
+                if run_fn and st.button("▶️ 분석 실행", use_container_width=True, type="primary"):
+                    res = None
+                    try:
+                        with st.spinner("통계 계산 중..."):
+                            res = run_fn()
+                    except ValueError as ve:
+                        st.error(f"⚠️ {ve}")
+                    except Exception as ex:
+                        st.error(f"❌ 분석 실패: {ex}")
+                    if res:
+                        interp = None
+                        if interpret:
+                            context_line = f"\n연구 맥락: {research_context}" if research_context else ""
+                            interp_prompt = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{context_line}
+
+## 분석 결과
+{res['summary']}
+
+작성 지침:
+1. APA 스타일 통계치 표기(t, F, χ², β, p, 효과크기 등)를 포함한 학술적 한국어 문장으로 서술하세요.
+2. 효과크기의 실질적 의미를 함께 해석하세요.
+3. 유의하지 않은 결과도 있는 그대로 서술하세요. 결과를 긍정적으로 왜곡하지 마세요.
+4. 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
+5. 마지막에 '해석 시 유의점' 1~2가지를 덧붙이세요."""
+                            with st.spinner("Claude가 결과를 논문 문장으로 작성 중..."):
+                                interp = chat_with_claude(
+                                    [{"role": "user", "content": interp_prompt}])
+                        st.session_state["stats_run"] = {
+                            "analysis": analysis, "result": res, "interp": interp,
+                        }
+
+                saved = st.session_state.get("stats_run")
+                if saved:
+                    st.markdown(f"#### 결과 — {saved['analysis']}")
+                    for tname, tdf in saved["result"]["tables"].items():
+                        st.markdown(f"**{tname}**")
+                        st.dataframe(tdf, use_container_width=True)
+                    with st.expander("결과 요약 (텍스트)"):
+                        st.text(saved["result"]["summary"])
+                    if saved["interp"]:
+                        st.markdown("#### 📝 논문용 결과 해석")
+                        st.markdown(saved["interp"])
+                        st.download_button(
+                            "📋 결과 해석 저장 (.txt)", saved["interp"],
+                            file_name="통계결과해석.txt", mime="text/plain",
+                            key="stats_interp_dl",
+                        )
 
         except Exception as e:
             st.error(f"❌ 파일 로드 오류: {e}")

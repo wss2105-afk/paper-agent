@@ -9,3 +9,7 @@ python-docx
 pandas
 openpyxl
 pyreadstat
+scipy
+statsmodels
+semopy
+stepmix
