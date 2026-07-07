@@ -16,7 +16,7 @@ from data_analyzer import load_file, summarize_dataframe, summarize_interview, g
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
     run_chisquare, run_cronbach, run_regression, run_hlm,
-    run_lca, run_sem, SEM_EXAMPLE,
+    run_lca, run_sem, run_sem_multigroup, SEM_EXAMPLE,
 )
 from style_analyzer import (
     load_my_papers, build_style_prompt, save_style_profile,
@@ -842,7 +842,14 @@ elif mode == "📊 데이터 분석 설계":
                         placeholder=SEM_EXAMPLE, height=170,
                         help="=~ : 잠재변수 정의(측정모형) / ~ : 회귀 경로(구조모형) / ~~ : 공분산. 변수명은 데이터 열 이름과 일치해야 해요.",
                     )
-                    run_fn = lambda: run_sem(data, model_spec)
+                    mg_col = st.selectbox(
+                        "다집단 비교 (선택)", ["사용 안 함"] + all_cols,
+                        help="집단변수를 선택하면 집단별로 모형을 적합하고, 구조 경로가 집단 간에 다른지 z검정으로 비교해요. (예: 성별, 학교급)",
+                    )
+                    if mg_col == "사용 안 함":
+                        run_fn = lambda: run_sem(data, model_spec)
+                    else:
+                        run_fn = lambda: run_sem_multigroup(data, model_spec, mg_col)
 
                 interpret = st.checkbox("🤖 결과를 논문용 문장으로 해석", value=True,
                                         help="계산된 결과를 APA 표기를 포함한 '연구 결과' 절 문장으로 작성해드려요.")

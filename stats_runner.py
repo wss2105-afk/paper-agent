@@ -490,12 +490,21 @@ SEM_EXAMPLE = """# 측정모형 (=~ : 잠재변수 정의)
 성취 ~ 동기"""
 
 
-def run_sem(df, model_spec):
-    import semopy
-    if not model_spec.strip():
-        raise ValueError("모델식을 입력해주세요.")
+def _sem_declared_paths(model_spec):
+    """모델식에서 사용자가 직접 선언한 구조 경로(~) (lval, rval) 목록 추출"""
+    declared = []
+    for line in model_spec.splitlines():
+        line = line.split("#")[0]
+        if "~" in line and "=~" not in line and "~~" not in line:
+            lhs, rhs = line.split("~", 1)
+            for tok in rhs.split("+"):
+                if lhs.strip() and tok.strip():
+                    declared.append((lhs.strip(), tok.strip()))
+    return declared
 
-    # 모델식에 등장하는 관측변수 확인
+
+def _sem_used_columns(df, model_spec):
+    """모델식에 등장하는 관측변수(데이터 열과 일치하는 것) 추출"""
     used = set()
     for line in model_spec.splitlines():
         line = line.split("#")[0]
@@ -507,6 +516,30 @@ def run_sem(df, model_spec):
                     if tok and tok in df.columns:
                         used.add(tok)
                 break
+    return used
+
+
+def _fit_sem_once(df, model_spec):
+    """SEM 1회 적합 → (추정치 DF, 적합도 dict, 사용 N)"""
+    import semopy
+    used = _sem_used_columns(df, model_spec)
+    if not used:
+        raise ValueError("모델식의 변수명이 데이터 열 이름과 하나도 일치하지 않아요. 열 이름을 확인해주세요.")
+    _numeric_check(df, sorted(used))
+    sub, n = _clean(df, sorted(used))
+    model = semopy.Model(model_spec)
+    model.fit(sub)
+    est = model.inspect(std_est=True)
+    fit = semopy.calc_stats(model)
+    return est, fit, n
+
+
+def run_sem(df, model_spec):
+    import semopy
+    if not model_spec.strip():
+        raise ValueError("모델식을 입력해주세요.")
+
+    used = _sem_used_columns(df, model_spec)
     if not used:
         raise ValueError("모델식의 변수명이 데이터 열 이름과 하나도 일치하지 않아요. 열 이름을 확인해주세요.")
 
@@ -546,13 +579,7 @@ def run_sem(df, model_spec):
 
     # 사용자가 모델식에 직접 선언한 구조 경로(~)만 요약에 표시
     # (semopy inspect는 측정 부하량도 op '~'로 내놓으므로 스펙에서 선언된 쌍만 추림)
-    declared = set()
-    for line in model_spec.splitlines():
-        line = line.split("#")[0]
-        if "~" in line and "=~" not in line and "~~" not in line:
-            lhs, rhs = line.split("~", 1)
-            for tok in rhs.split("+"):
-                declared.add((lhs.strip(), tok.strip()))
+    declared = set(_sem_declared_paths(model_spec))
     paths = est[est["op"] == "~"]
     path_lines = []
     for _, r in paths.iterrows():
@@ -575,3 +602,129 @@ def run_sem(df, model_spec):
         f"[구조 경로]\n" + ("\n".join(path_lines) if path_lines else "- 구조 경로 없음(측정모형만 추정)")
     )
     return {"tables": {"모수 추정치": est_disp, "적합도 지수": fit}, "summary": summary}
+
+
+# ── 11. 다집단 SEM (multi-group) ──────────────────────────────
+
+def run_sem_multigroup(df, model_spec, group_col):
+    """다집단 SEM: 집단별로 같은 모형을 자유 추정하고,
+    선언된 구조 경로의 집단 간 차이를 z검정(critical ratio difference)으로 비교.
+    ※ semopy는 등가제약(정식 측정동일성 검증)을 지원하지 않아 집단별 자유 추정 방식 사용."""
+    if not model_spec.strip():
+        raise ValueError("모델식을 입력해주세요.")
+    declared = _sem_declared_paths(model_spec)
+    if not declared:
+        raise ValueError("다집단 비교에는 구조 경로(~)가 1개 이상 필요해요. (측정모형만으로는 비교할 경로가 없어요)")
+
+    levels = [lv for lv in df[group_col].dropna().unique()]
+    if len(levels) < 2:
+        raise ValueError(f"집단변수 '{group_col}'의 수준이 {len(levels)}개예요. 2개 이상 필요해요.")
+    if len(levels) > 4:
+        raise ValueError(f"집단이 {len(levels)}개예요. 다집단 SEM은 4개 이하를 권장해요. (집단변수를 확인해주세요)")
+
+    fit_rows, path_rows, est_by_group = [], [], {}
+    small_groups = []
+    for lv in levels:
+        gdf = df[df[group_col] == lv]
+        try:
+            est, fit, n = _fit_sem_once(gdf, model_spec)
+        except ValueError as e:
+            raise ValueError(f"집단 '{lv}' 적합 실패: {e}")
+        except Exception as e:
+            raise ValueError(f"집단 '{lv}'에서 모형 추정이 실패했어요 ({type(e).__name__}). 사례 수({len(gdf)})가 부족하거나 모형이 데이터와 맞지 않을 수 있어요.")
+        if n < 100:
+            small_groups.append(f"{lv}(n={n})")
+
+        fit_d = fit.iloc[:, 0].to_dict() if fit.shape[1] == 1 else fit.iloc[0].to_dict()
+        # calc_stats는 (1행 × 지수열) 형태 — 행/열 방향 안전 처리
+        if "CFI" not in fit_d:
+            fit_d = fit.T.iloc[:, 0].to_dict()
+
+        def g(k):
+            v = fit_d.get(k)
+            try:
+                return round(float(v), 3)
+            except (TypeError, ValueError):
+                return "-"
+
+        fit_rows.append({
+            "집단": str(lv), "N": n, "χ²": g("chi2"), "df": g("DoF"),
+            "CFI": g("CFI"), "TLI": g("TLI"), "RMSEA": g("RMSEA"),
+        })
+
+        # 선언된 구조 경로의 추정치 수집
+        est_paths = {}
+        for _, r in est[est["op"] == "~"].iterrows():
+            key = (str(r["lval"]), str(r["rval"]))
+            if key in declared:
+                try:
+                    est_paths[key] = {
+                        "B": float(r["Estimate"]), "SE": float(r["Std. Err"]),
+                        "beta": float(r["Est. Std"]), "p": float(r["p-value"]),
+                    }
+                except (ValueError, TypeError):
+                    est_paths[key] = None
+        est_by_group[lv] = est_paths
+
+        for (lval, rval) in declared:
+            e = est_paths.get((lval, rval))
+            path_rows.append({
+                "경로": f"{rval} → {lval}", "집단": str(lv),
+                "B": round(e["B"], 3) if e else "-",
+                "SE": round(e["SE"], 3) if e else "-",
+                "β": round(e["beta"], 3) if e else "-",
+                "p": round(e["p"], 4) if e else "-",
+            })
+
+    # 경로별 집단 간 차이 z검정 (비표준화 계수 기준)
+    diff_rows = []
+    for (lval, rval) in declared:
+        for i in range(len(levels)):
+            for j in range(i + 1, len(levels)):
+                e1 = est_by_group[levels[i]].get((lval, rval))
+                e2 = est_by_group[levels[j]].get((lval, rval))
+                if not e1 or not e2:
+                    continue
+                se = np.sqrt(e1["SE"] ** 2 + e2["SE"] ** 2)
+                z = (e1["B"] - e2["B"]) / se if se > 0 else np.nan
+                p = 2 * stats.norm.sf(abs(z)) if not np.isnan(z) else np.nan
+                diff_rows.append({
+                    "경로": f"{rval} → {lval}",
+                    "비교": f"{levels[i]} vs {levels[j]}",
+                    "ΔB": round(e1["B"] - e2["B"], 3),
+                    "z": round(z, 3), "p": round(p, 4),
+                    "유의(p<.05)": "★" if p < 0.05 else "",
+                })
+
+    tables = {
+        "집단별 적합도": pd.DataFrame(fit_rows),
+        "집단별 구조 경로": pd.DataFrame(path_rows),
+        "경로 차이 z검정": pd.DataFrame(diff_rows),
+    }
+
+    sig_diffs = [f"{r['경로']} ({r['비교']}): ΔB={r['ΔB']}, z={r['z']}, p {_p_str(r['p'])}"
+                 for r in diff_rows if r["유의(p<.05)"]]
+    warn = ""
+    if small_groups:
+        warn = f"\n- ⚠️ 사례 수가 100 미만인 집단: {', '.join(small_groups)}. SEM 추정이 불안정할 수 있어요."
+
+    summary = (
+        f"다집단 SEM: 집단변수={group_col} ({len(levels)}개 집단: {', '.join(map(str, levels))})\n"
+        f"[모델식]\n{model_spec.strip()}\n"
+        f"[집단별 적합도] " + "; ".join(
+            f"{r['집단']}(N={r['N']}): CFI={r['CFI']}, TLI={r['TLI']}, RMSEA={r['RMSEA']}"
+            for r in fit_rows) + "\n"
+        f"[집단별 구조 경로]\n" + "\n".join(
+            f"- {r['경로']} [{r['집단']}]: B={r['B']}, β={r['β']}, p={r['p']}"
+            for r in path_rows) + "\n"
+        f"[경로 차이 z검정 (비표준화 B 기준)]\n"
+        + ("\n".join(f"- {r['경로']} ({r['비교']}): ΔB={r['ΔB']}, z={r['z']}, p {_p_str(r['p'])}"
+                     f" {'(집단 간 차이 유의)' if r['유의(p<.05)'] else '(차이 비유의)'}"
+                     for r in diff_rows) if diff_rows else "- 비교 가능한 경로 없음")
+        + f"\n- 유의한 집단 간 차이: {len(sig_diffs)}건 / 전체 {len(diff_rows)}건 비교"
+        + warn
+        + "\n- ⚠️ 방법론 주의: 집단별 자유 추정 + 경로차이 z검정(critical ratio) 방식이에요. "
+          "정식 측정동일성 검증(등가제약 모형 비교)은 포함되지 않으므로, "
+          "논문에는 이 한계를 명시하거나 Mplus/lavaan(R)으로 측정동일성을 별도 확인하는 것을 권장해요."
+    )
+    return {"tables": tables, "summary": summary}
