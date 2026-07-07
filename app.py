@@ -1,5 +1,6 @@
 import html as _html
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from dotenv import load_dotenv
 import streamlit.components.v1 as components
 from rag import ReferenceLibrary
 from scholar import search_papers
-from export import to_word, to_markdown
+from export import to_word, to_markdown, to_word_redline, diff_segments
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
@@ -1080,11 +1081,58 @@ elif mode == "✍️ 글쓰기 교정":
 
     if st.button("교정 시작") and text_input:
         style_section = build_style_instruction(corr_style_profile) if use_my_style_corr else ""
-        prompt = f"""다음 글을 '{correction_type}' 관점에서 교정해주세요. 원문과 수정본을 나란히 보여주고, 수정 이유도 설명해주세요.
+        prompt = f"""다음 글을 '{correction_type}' 관점에서 교정해주세요.
 {style_section}
 [원문]
-{text_input}"""
-        st.session_state.messages.append({"role": "user", "content": prompt})
+{text_input}
+
+출력 형식 (반드시 지킬 것):
+[교정문]
+(교정된 전체 글만 출력. 머리말·설명·마크다운 서식 없이 순수한 글만)
+[교정 끝]
+[수정 설명]
+- 무엇을 왜 바꿨는지 항목별로 간단히"""
+        with st.spinner("교정 중..."):
+            corr_resp = chat_with_claude([{"role": "user", "content": prompt}])
+        corrected, explanation = corr_resp, ""
+        m = re.search(r"\[교정문\]\s*(.*?)\s*\[교정 끝\]", corr_resp, re.S)
+        if m:
+            corrected = m.group(1).strip()
+            after = corr_resp.split("[교정 끝]", 1)[1]
+            explanation = after.replace("[수정 설명]", "").strip()
+        st.session_state["corr_result"] = {
+            "original": text_input, "corrected": corrected, "explanation": explanation,
+        }
+
+    corr_res = st.session_state.get("corr_result")
+    if corr_res:
+        st.markdown("#### 교정 결과 — <span style='color:#d32f2f'>빨간색</span> = 수정된 부분",
+                    unsafe_allow_html=True)
+        _parts = []
+        for _seg, _chg in diff_segments(corr_res["original"], corr_res["corrected"]):
+            _esc = _html.escape(_seg).replace("\n", "<br>")
+            _parts.append(
+                f"<span style='color:#d32f2f;font-weight:600'>{_esc}</span>" if _chg else _esc)
+        st.markdown(
+            "<div style='line-height:1.9;border:1px solid #ddd;border-radius:8px;"
+            "padding:14px;background:#fafafa'>" + "".join(_parts) + "</div>",
+            unsafe_allow_html=True)
+        if corr_res["explanation"]:
+            with st.expander("수정 설명 보기", expanded=True):
+                st.markdown(corr_res["explanation"])
+        dl1, dl2 = st.columns(2)
+        dl1.download_button(
+            "📄 Word로 저장 (수정 빨간색 표시)",
+            data=to_word_redline(corr_res["original"], corr_res["corrected"],
+                                 corr_res["explanation"]),
+            file_name="교정결과_빨간표시.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key="corr_docx",
+        )
+        dl2.download_button(
+            "📋 교정문만 저장 (.txt)", corr_res["corrected"],
+            file_name="교정결과.txt", mime="text/plain", key="corr_txt",
+        )
 
 # ── 참고문헌 변환 ─────────────────────────────────────────────
 elif mode == "🔖 참고문헌 변환":
@@ -1097,7 +1145,7 @@ elif mode == "🔖 참고문헌 변환":
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
-if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"]:
+if mode in ["💬 자유 질문", "📄 PDF 분석", "🏗️ 논문 구조 설계", "🔖 참고문헌 변환"]:
     for msg in st.session_state.messages:
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":
