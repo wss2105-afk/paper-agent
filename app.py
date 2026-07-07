@@ -22,11 +22,12 @@ from sjr_data import quartile_badge
 load_dotenv()
 
 # 저장 경로 결정 우선순위:
-#   1) DATA_DIR (직접 지정)
-#   2) RAILWAY_VOLUME_MOUNT_PATH (볼륨 붙이면 Railway가 자동 주입)
+#   1) RAILWAY_VOLUME_MOUNT_PATH (볼륨 붙으면 Railway가 자동 주입) — 볼륨이 있으면 무조건 여기 저장
+#   2) DATA_DIR (직접 지정)
 #   3) ./data (로컬 기본값)
-# → 볼륨만 마운트돼 있으면 DATA_DIR 설정을 깜빡해도 영구 저장됨.
-DATA_DIR = os.getenv("DATA_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or "./data"
+# 볼륨 경로를 최우선으로 둔다. 과거 DATA_DIR=./data 로 잘못 설정돼 볼륨을 두고도
+# 임시 디스크에 저장 → 재배포마다 데이터 소실되던 사고 재발 방지.
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR") or "./data"
 PDF_DIR        = Path(DATA_DIR) / "pdfs"
 DB_DIR         = Path(DATA_DIR) / "reference_db"
 MY_PAPERS_DIR  = Path(DATA_DIR) / "my_papers"
