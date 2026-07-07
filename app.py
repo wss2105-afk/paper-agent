@@ -16,6 +16,7 @@ from rag import ReferenceLibrary
 from scholar import search_papers
 from export import to_word, to_markdown, to_word_redline, to_hwpx_redline, diff_segments
 import inplace_redline as ir
+import journal_format as jf
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats, load_codebook_text
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
@@ -430,7 +431,7 @@ with st.sidebar:
         "원하는 작업을 선택하세요",
         ["💬 자유 질문", "📚 단락 작성 · 논문 분석", "✒️ 인용 자동 삽입",
          "🔍 문헌 추천", "📊 데이터 분석 설계",
-         "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 참고문헌 변환"],
+         "🏗️ 논문 구조 설계", "✍️ 글쓰기 교정", "🔖 학술지 형식 · 참고문헌 변환"],
     )
 
     st.divider()
@@ -1530,24 +1531,192 @@ elif mode == "✍️ 글쓰기 교정":
             file_name="교정결과.txt", mime="text/plain", key="corr_txt",
         )
 
-# ── 참고문헌 변환 ─────────────────────────────────────────────
-elif mode == "🔖 참고문헌 변환":
-    st.subheader("참고문헌 형식 변환")
-    ref_input = st.text_area("참고문헌 정보를 입력하세요", height=150,
-                              placeholder="예: 저자명, 출판연도, 제목, 학술지명, 권호, 페이지")
-    ref_format = st.selectbox("변환할 형식", ["APA 7판", "MLA", "Chicago", "한국 학술지 형식"])
-    if st.button("변환 시작") and ref_input:
-        prompt = f"""다음 정보를 {ref_format} 형식의 참고문헌으로 변환해주세요:
+# ── 학술지 형식 · 참고문헌 변환 (통합) ────────────────────────
+elif mode == "🔖 학술지 형식 · 참고문헌 변환":
+    st.subheader("🔖 학술지 형식 맞추기 · 참고문헌 변환")
+    tab_journal, tab_ref = st.tabs(["📐 학술지 형식 맞추기", "🔖 참고문헌 변환"])
+
+    # ── 탭 1: 학술지 형식 맞추기 ──────────────────────────────
+    with tab_journal:
+        JFMT_FILE = PROJ_DIR / "journal_format.json"
+        st.markdown("##### 1) 학술지 형식 규정 등록")
+        st.caption("학술지 투고규정 웹주소를 넣거나 규정·템플릿 파일을 올리면, 그 형식(인용·구조·레이아웃)을 학습해요. 프로젝트에 저장됩니다.")
+
+        jf_url = st.text_input("투고규정 웹주소 (선택)",
+                               placeholder="예: https://학술지사이트/author-guidelines")
+        jf_file = st.file_uploader("또는 규정·템플릿 파일 업로드 (선택)",
+                                   type=["pdf", "docx", "hwp", "hwpx", "txt", "xlsx", "csv"],
+                                   key="jfmt_src")
+        if st.button("📖 형식 규칙 분석", use_container_width=True,
+                     disabled=not (jf_url.strip() or jf_file)):
+            src_text = ""
+            try:
+                if jf_file:
+                    with st.spinner("규정 파일 읽는 중..."):
+                        src_text = load_codebook_text(jf_file)
+                elif jf_url.strip():
+                    with st.spinner("웹페이지에서 규정 가져오는 중..."):
+                        src_text = jf.fetch_url_text(jf_url)
+            except Exception as e:
+                st.error(f"❌ 규정을 가져오지 못했어요: {e}")
+            if src_text.strip():
+                rule_prompt = f"""다음은 한 학술지의 투고 규정(author guidelines)입니다. 원고를 이 학술지 형식에 맞게 편집하기 위한 '형식 규칙 요약'을 작성하세요.
+
+[투고 규정 원문]
+{src_text[:12000]}
+
+다음을 포함해 한국어로 정리하세요:
+1. 인용·참고문헌 스타일 (본문 인용 방식 + 참고문헌 목록 형식, 가능하면 예시)
+2. 원고 구조 (제목/초록 단어수/키워드 개수/섹션 순서/소제목 단계)
+3. 표·그림 캡션 규칙
+4. 기타 표기 규칙(숫자, 약어, 단위 등)
+규정에 없는 항목은 "규정에 명시 없음"이라고 쓰세요. 지어내지 마세요.
+
+마지막에 문서 레이아웃을 아래 형식의 JSON으로 출력하세요(규정에 없으면 일반 기본값 추정, 값은 숫자만):
+[레이아웃]
+```json
+{{"font": "한글 글꼴명 또는 빈문자열", "size_pt": 10, "line_spacing": 1.6, "margin_cm": {{"top": 2.5, "bottom": 2.5, "left": 2.5, "right": 2.5}}}}
+```"""
+                with st.spinner("Claude가 형식 규칙 분석 중..."):
+                    rule_resp = chat_with_claude([{"role": "user", "content": rule_prompt}])
+                layout = dict(jf.DEFAULT_LAYOUT)
+                _lm = re.search(r"\[레이아웃\].*?```json\s*(.*?)```", rule_resp, re.S)
+                rulebook = rule_resp
+                if _lm:
+                    try:
+                        layout = {**jf.DEFAULT_LAYOUT, **json.loads(_lm.group(1))}
+                    except Exception:
+                        pass
+                    rulebook = rule_resp[:_lm.start()].strip()
+                JFMT_FILE.write_text(json.dumps(
+                    {"rulebook": rulebook, "layout": layout,
+                     "source": (jf_file.name if jf_file else jf_url)},
+                    ensure_ascii=False), encoding="utf-8")
+                st.success("✅ 형식 규칙 저장 완료")
+                st.rerun()
+
+        saved_fmt = None
+        if JFMT_FILE.exists():
+            try:
+                saved_fmt = json.loads(JFMT_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                saved_fmt = None
+        if saved_fmt:
+            st.success(f"✅ 등록된 형식: {saved_fmt.get('source', '(파일)')}")
+            with st.expander("형식 규칙 보기"):
+                st.markdown(saved_fmt.get("rulebook", ""))
+                st.caption(f"레이아웃: {saved_fmt.get('layout')}")
+            if st.button("🗑️ 형식 삭제", key="jfmt_del"):
+                JFMT_FILE.unlink()
+                st.rerun()
+
+            st.divider()
+            st.markdown("##### 2) 원고를 이 형식으로 편집")
+            ms_file = st.file_uploader("원고 업로드 (docx/hwpx/txt)",
+                                       type=["docx", "hwp", "hwpx", "txt"], key="jfmt_ms")
+            if st.button("✨ 형식 맞추기 실행", use_container_width=True, disabled=not ms_file):
+                try:
+                    with st.spinner("원고 읽는 중..."):
+                        ms_text = load_codebook_text(ms_file)
+                except Exception as e:
+                    ms_text = ""
+                    st.error(f"❌ 원고를 읽지 못했어요: {e}")
+                if ms_text.strip():
+                    chunks = _split_for_correction(ms_text, limit=4000)
+                    if len(chunks) > 1:
+                        st.info(f"원고가 길어 {len(chunks)}개 구간으로 나눠 편집해요.")
+                    parts = []
+                    prog = st.progress(0.0) if len(chunks) > 1 else None
+                    for ci, chunk in enumerate(chunks):
+                        fmt_prompt = f"""아래 [형식 규칙]에 맞게 [원고]를 재편집하세요.
+
+[형식 규칙]
+{saved_fmt['rulebook'][:6000]}
+
+[원고]
+{chunk}
+
+지침:
+1. 인용·참고문헌 표기를 규칙의 스타일로 바꾸세요. 학술지명에 따옴표 금지.
+2. 섹션 구조와 소제목을 규칙에 맞게 정리하되, 제목은 마크다운으로 표시: 대제목 "# ", 중제목 "## ", 소제목 "### ". 본문은 그대로 문단.
+3. 원고의 내용을 빠짐없이 포함하고, 없는 사실·인용을 지어내지 마세요.
+4. 재편집된 원고만 출력하세요(설명 없이)."""
+                        with st.spinner(f"형식 맞추는 중... ({ci + 1}/{len(chunks)})"):
+                            parts.append(chat_with_claude([{"role": "user", "content": fmt_prompt}]))
+                        if prog:
+                            prog.progress((ci + 1) / len(chunks))
+                    if prog:
+                        prog.empty()
+                    formatted_md = "\n\n".join(parts)
+                    st.session_state["jfmt_result"] = {
+                        "md": formatted_md, "layout": saved_fmt.get("layout"),
+                        "name": ms_file.name.rsplit(".", 1)[0],
+                    }
+
+            jr = st.session_state.get("jfmt_result")
+            if jr:
+                st.divider()
+                st.markdown("##### 편집 결과")
+                st.markdown(jr["md"][:4000] + ("\n\n...(이하 생략, 파일에는 전체 포함)" if len(jr["md"]) > 4000 else ""))
+                d1, d2, d3 = st.columns(3)
+                d1.download_button(
+                    "📄 Word (.docx, 형식 적용)",
+                    data=jf.build_docx_from_markdown(jr["md"], jr["layout"]),
+                    file_name=f"{jr['name']}_형식적용.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="jfmt_docx")
+                d2.download_button(
+                    "📄 한글 (.hwpx)",
+                    data=jf.build_hwpx_from_markdown(jr["md"]),
+                    file_name=f"{jr['name']}_형식적용.hwpx",
+                    mime="application/octet-stream", key="jfmt_hwpx")
+                d3.download_button(
+                    "📋 텍스트 (.txt)", jr["md"],
+                    file_name=f"{jr['name']}_형식적용.txt",
+                    mime="text/plain", key="jfmt_txt")
+                st.caption("※ 레이아웃(여백·글꼴·줄간격)은 Word(.docx)에 정확히 적용돼요. hwpx는 내용 위주입니다.")
+        else:
+            st.info("먼저 위에서 학술지 형식 규정을 등록하세요.")
+
+    # ── 탭 2: 참고문헌 변환 ───────────────────────────────────
+    with tab_ref:
+        ref_input = st.text_area("참고문헌 정보를 입력하세요", height=150,
+                                 placeholder="예: 저자명, 출판연도, 제목, 학술지명, 권호, 페이지")
+        ref_format = st.selectbox("변환할 형식",
+                                  ["APA 7판", "MLA", "Chicago", "한국 학술지 형식",
+                                   "등록한 학술지 형식"])
+        if st.button("변환 시작", key="ref_convert") and ref_input:
+            fmt_desc = ref_format
+            if ref_format == "등록한 학술지 형식":
+                _sf = None
+                if (PROJ_DIR / "journal_format.json").exists():
+                    try:
+                        _sf = json.loads((PROJ_DIR / "journal_format.json").read_text(encoding="utf-8"))
+                    except Exception:
+                        _sf = None
+                if _sf:
+                    fmt_desc = f"아래 학술지 형식 규칙에 따른 참고문헌 형식:\n{_sf['rulebook'][:3000]}"
+                else:
+                    st.warning("등록된 학술지 형식이 없어요. '학술지 형식 맞추기' 탭에서 먼저 등록하세요.")
+                    fmt_desc = "APA 7판"
+            prompt = f"""다음 정보를 {fmt_desc} 으로 참고문헌을 변환해주세요:
 
 {ref_input}
 
 표기 규칙:
 - 학술지 이름에 따옴표를 붙이지 마세요. 규정에 따라 학술지명과 권 번호는 이탤릭으로 표기하세요.
-- 논문 제목에도 따옴표를 붙이지 마세요 ({ref_format} 규정이 요구하는 경우에만 예외)."""
-        st.session_state.messages.append({"role": "user", "content": prompt})
+- 논문 제목에도 따옴표를 붙이지 마세요 (해당 형식이 요구하는 경우에만 예외)."""
+            with st.spinner("변환 중..."):
+                st.session_state["ref_result"] = chat_with_claude(
+                    [{"role": "user", "content": prompt}])
+        if st.session_state.get("ref_result"):
+            st.markdown("#### 변환 결과")
+            st.markdown(st.session_state["ref_result"])
+            st.download_button("📋 저장 (.txt)", st.session_state["ref_result"],
+                               file_name="참고문헌.txt", mime="text/plain", key="ref_dl")
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
-if mode in ["💬 자유 질문", "🏗️ 논문 구조 설계", "🔖 참고문헌 변환"]:
+if mode in ["💬 자유 질문", "🏗️ 논문 구조 설계"]:
     for msg in st.session_state.messages:
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":
