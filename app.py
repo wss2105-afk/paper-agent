@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 import anthropic
@@ -837,16 +838,93 @@ elif mode == "📊 데이터 분석 설계":
     st.subheader("📊 데이터 분석 설계")
     st.caption("Excel, SPSS, 인터뷰 텍스트를 업로드하면 데이터 구조를 파악하고 연구문제와 분석 방법을 제안해드려요.")
 
+    # ── 업로드 홀딩: 한 번 올린 데이터·연구 맥락을 일정 시간 유지 ──
+    HOLD_HOURS = 24
+    HELD_DIR = PROJ_DIR / "analysis_upload"
+    HELD_META = HELD_DIR / "held.json"
+
+    class _HeldFile(io.BytesIO):
+        """디스크에 보관해 둔 업로드 파일을 UploadedFile처럼 흉내내는 래퍼"""
+        pass
+
+    def _held_load():
+        """만료되지 않은 홀딩 메타 반환 (없거나 만료면 None)"""
+        try:
+            m = json.loads(HELD_META.read_text(encoding="utf-8"))
+            if time.time() - float(m.get("saved_at", 0)) > HOLD_HOURS * 3600:
+                return None
+            return m
+        except Exception:
+            return None
+
+    def _held_save(meta):
+        try:
+            HELD_DIR.mkdir(parents=True, exist_ok=True)
+            HELD_META.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _held_clear():
+        try:
+            if HELD_DIR.exists():
+                for _f in HELD_DIR.iterdir():
+                    _f.unlink()
+        except Exception:
+            pass
+
+    _held = _held_load()
+
     uploaded_data = st.file_uploader(
         "데이터 파일 업로드",
         type=["xlsx", "xls", "sav", "csv", "txt", "docx", "hwp", "hwpx"],
-        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwp/.hwpx) 지원",
+        help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwp/.hwpx) 지원. "
+             f"한 번 올리면 {HOLD_HOURS}시간 동안 유지돼요 (화면을 옮겨도 다시 올릴 필요 없음).",
     )
+
+    if uploaded_data is not None:
+        # 새 업로드 → 홀딩 사본 갱신 (연구 맥락은 유지, 같은 파일이면 재저장 생략)
+        _sig = f"{uploaded_data.name}:{getattr(uploaded_data, 'size', 0)}"
+        if st.session_state.get("held_sig") != _sig or not (HELD_DIR / uploaded_data.name).exists():
+            try:
+                _held_clear()
+                HELD_DIR.mkdir(parents=True, exist_ok=True)
+                (HELD_DIR / uploaded_data.name).write_bytes(uploaded_data.getvalue())
+                _held = {
+                    "filename": uploaded_data.name,
+                    "saved_at": time.time(),
+                    "research_context": (_held or {}).get("research_context", ""),
+                }
+                _held_save(_held)
+                st.session_state["held_sig"] = _sig
+            except Exception:
+                pass
+    elif _held and _held.get("filename") and (HELD_DIR / _held["filename"]).exists():
+        # 홀딩된 파일 복원
+        _age = int(time.time() - float(_held["saved_at"]))
+        _age_txt = f"{_age // 60}분 전" if _age < 3600 else f"{_age // 3600}시간 전"
+        _hc1, _hc2 = st.columns([5, 1])
+        _hc1.info(f"💾 이전 업로드 유지 중: **{_held['filename']}** ({_age_txt} 업로드) — "
+                  f"새 파일을 올리면 교체돼요. 최대 {HOLD_HOURS}시간 유지.")
+        if _hc2.button("🗑️ 지우기", key="held_del", help="유지 중인 데이터·연구 맥락 삭제"):
+            _held_clear()
+            st.rerun()
+        uploaded_data = _HeldFile((HELD_DIR / _held["filename"]).read_bytes())
+        uploaded_data.name = _held["filename"]
+
     research_context = st.text_input(
         "연구 맥락 (선택)",
+        value=(_held or {}).get("research_context", ""),
         placeholder="예: 대학생 블렌디드 러닝 경험 설문조사",
-        help="어떤 연구인지 간단히 설명하면 더 정확한 제안을 드릴 수 있어요",
+        help="어떤 연구인지 간단히 설명하면 더 정확한 제안을 드릴 수 있어요. 데이터와 함께 유지돼요.",
     )
+    if _held is not None:
+        if research_context != _held.get("research_context", ""):
+            _held["research_context"] = research_context
+            _held_save(_held)
+    elif research_context.strip():
+        # 데이터보다 연구 맥락을 먼저 입력한 경우도 유지
+        _held = {"filename": "", "saved_at": time.time(), "research_context": research_context}
+        _held_save(_held)
 
     # ── 코딩북 (변수 설명서) — 프로젝트별 영구 저장 ─────────
     CODEBOOK_FILE = PROJ_DIR / "codebook.txt"
