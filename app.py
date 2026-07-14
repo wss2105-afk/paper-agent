@@ -948,7 +948,7 @@ elif mode == "📊 데이터 분석 설계":
 [실행 스펙]
 ```json
 [
-  {"method": "ttest_ind", "dv": "변수명", "group": "변수명", "설명": "집단에 따른 ○○ 차이 (독립표본 t검정)"}
+  {"연구문제": "연구문제 1. ○○은 △△에 어떤 영향을 미치는가?", "method": "ttest_ind", "dv": "변수명", "group": "변수명", "설명": "집단에 따른 ○○ 차이 (독립표본 t검정)"}
 ]
 ```
 
@@ -964,7 +964,7 @@ elif mode == "📊 데이터 분석 설계":
 - lcsm: waves(시점 순서 변수명 배열), group(선택, 다집단 비교)
 - lca: cols(지표 변수명 배열)
 
-규칙: 변수명은 [데이터 구조]의 열 이름과 정확히 일치 (코딩북의 문항 설명이 아니라 실제 열 이름). 실행 불가한 제안(SEM 등)은 JSON에서 제외. 최대 6개. "설명"은 코딩북의 변수 의미를 반영한 한 줄 한국어."""
+규칙: 변수명은 [데이터 구조]의 열 이름과 정확히 일치 (코딩북의 문항 설명이 아니라 실제 열 이름). 실행 불가한 제안(SEM 등)은 JSON에서 제외. 최대 6개. "설명"은 코딩북의 변수 의미를 반영한 한 줄 한국어. "연구문제"는 위에서 제안한 연구문제 문장을 번호와 함께 그대로 적을 것 (연구문제 하나에 분석이 여러 개면 같은 "연구문제" 값을 반복)."""
 
                 with st.spinner("Claude가 분석 설계 중..."):
                     result = chat_with_claude([{"role": "user", "content": prompt}])
@@ -1064,9 +1064,14 @@ elif mode == "📊 데이터 분석 설계":
 
                 _specs = st.session_state.get("design_specs") or []
                 if _specs:
-                    st.markdown("#### ⚡ 제안된 분석 바로 실행")
-                    st.caption("분석 설계에서 제안된 방법을 클릭 한 번으로 같은 데이터에 바로 실행해요. 결과는 아래와 '저장된 분석 결과'에 나타납니다.")
+                    st.markdown("#### ⚡ 연구문제별 분석 바로 실행")
+                    st.caption("연구문제마다 제안된 분석 방법을 클릭 한 번으로 같은 데이터에 바로 실행해요. 결과는 아래와 '저장된 분석 결과'에 나타납니다.")
+                    _last_rq = None
                     for _pi, _sp in enumerate(_specs[:6]):
+                        _rq = str(_sp.get("연구문제") or "").strip() if isinstance(_sp, dict) else ""
+                        if _rq and _rq != _last_rq:
+                            st.markdown(f"**❓ {_rq}**")
+                            _last_rq = _rq
                         _plabel = str(_sp.get("설명") or _sp.get("method", "분석"))
                         _pfn = _proposal_fn(_sp) if isinstance(_sp, dict) else None
                         if _pfn is None:
@@ -1083,11 +1088,12 @@ elif mode == "📊 데이터 분석 설계":
                                 st.error(f"❌ 분석 실패: {_ex}")
                             if _pres:
                                 _pint = _interp_stats(_pres["summary"])
+                                _psave = f"[{_rq}] {_plabel}" if _rq else _plabel
                                 st.session_state["stats_run"] = {
-                                    "analysis": _plabel, "result": _pres, "interp": _pint,
+                                    "analysis": _psave, "result": _pres, "interp": _pint,
                                 }
                                 try:
-                                    save_analysis(PROJ_DIR, _plabel, _pres, _pint,
+                                    save_analysis(PROJ_DIR, _psave, _pres, _pint,
                                                   note=uploaded_data.name)
                                 except Exception:
                                     pass
