@@ -106,7 +106,10 @@ class ReferenceLibrary:
                 chunks.append(chunk)
         return chunks
 
-    def search(self, query, top_k=5):
+    def search(self, query, top_k=5, per_source=1):
+        """상위 top_k개 논문에서 관련 청크를 찾는다.
+        per_source>1이면 논문당 최대 그만큼의 청크를 원문 순서로 이어붙여
+        더 넓은 문맥을 제공한다(단락 작성 품질 향상용)."""
         if not self.bm25 or not self.documents:
             return []
 
@@ -114,21 +117,40 @@ class ReferenceLibrary:
 
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
 
-        # 논문당 가장 관련 높은 청크 하나씩만 선택
+        # 논문당 최고 점수 청크(들) 선택 — dict 삽입 순서로 최고점 우선 유지
         seen = {}
         for idx in top_indices:
+            if scores[idx] <= 0:
+                break
             source = self.metadata[idx]["source"]
-            if source not in seen and scores[idx] > 0:
+            if source not in seen:
+                if len(seen) >= top_k:
+                    continue
                 seen[source] = {
-                    "text": self.documents[idx],
+                    "chunks": [(self.metadata[idx]["chunk_id"], self.documents[idx])],
                     "source": source,
                     "filename": self.metadata[idx]["filename"],
                     "score": scores[idx],
                 }
-            if len(seen) >= top_k:
-                break
+            elif len(seen[source]["chunks"]) < per_source:
+                seen[source]["chunks"].append(
+                    (self.metadata[idx]["chunk_id"], self.documents[idx]))
 
-        return sorted(seen.values(), key=lambda x: x["score"], reverse=True)
+        results = []
+        for item in seen.values():
+            # 논문 안에서는 원문 순서(chunk_id)로 이어붙여 읽기 흐름 유지
+            chunks = sorted(item.pop("chunks"))
+            item["text"] = "\n(...)\n".join(c for _, c in chunks)
+            results.append(item)
+        return sorted(results, key=lambda x: x["score"], reverse=True)
+
+    def get_head(self, source, max_chars=700):
+        """논문 첫머리(제목·저자·연도·학술지가 보통 담긴 부분)를 반환.
+        단락 작성 시 실제 서지 정보 기반 (저자, 연도) 인용에 사용한다."""
+        for doc, meta in zip(self.documents, self.metadata):
+            if meta["source"] == source and meta["chunk_id"] == 0:
+                return doc[:max_chars]
+        return ""
 
     def count_papers(self):
         sources = {m["source"] for m in self.metadata}

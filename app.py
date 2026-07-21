@@ -145,38 +145,68 @@ def chat_with_claude(messages, return_truncated=False):
     return text
 
 
-def write_paragraph_with_refs(topic, style, results, style_profile=None, language="한국어"):
+# 단락 유형별 작성 요령 — 프롬프트에 주입해 유형에 맞는 글의 역할·전개를 유도
+_PARAGRAPH_GUIDES = {
+    "이론적 배경": "핵심 개념을 정의하고, 관련 이론·모형을 소개한 뒤, 이 연구 주제와의 관련성을 밝히는 흐름으로 전개하세요.",
+    "서론": "연구 주제의 중요성과 시의성 → 기존 접근의 한계나 문제 상황 → 이 연구의 필요성 순으로 전개하세요.",
+    "선행연구 검토": "연구들을 단순 나열하지 말고 쟁점·결과별로 묶어 비교하고, 일치점과 불일치점을 밝힌 뒤 남은 연구 공백을 짚으세요.",
+    "논의": "결과가 의미하는 바를 선행연구와 비교(일치/불일치와 그 이유)하며 해석하고, 이론적·실천적 시사점을 제시하세요.",
+    "결론": "핵심 내용을 간결히 종합하고, 시사점과 함께 한계 또는 후속 연구 방향을 제안하세요.",
+}
+
+_PARAGRAPH_LENGTHS = {
+    "표준 (한 단락)": "객관적이고 학술적인 문체로 4~6문장의 단락 하나를 작성하세요.",
+    "상세 (2~3단락)": "객관적이고 학술적인 문체로 2~3개 단락(단락당 4~6문장)으로 충실히 작성하세요.",
+}
+
+
+def write_paragraph_with_refs(topic, style, results, style_profile=None, language="한국어",
+                              length="표준 (한 단락)", heads=None):
     ref_texts = "\n\n".join(
         f"[출처 {i+1}: {r['source']}]\n{r['text']}"
         for i, r in enumerate(results)
     )
     source_list = "\n".join(f"- {r['source']}" for r in results)
+    # 논문 첫머리(제목·저자·연도가 보통 담긴 부분) → 실제 서지 정보 기반 인용 유도
+    heads = heads or {}
+    bib_section = "\n\n".join(
+        f"[출처 {i+1} 첫머리: {r['source']}]\n{heads[r['source']]}"
+        for i, r in enumerate(results) if heads.get(r["source"])
+    )
+    bib_block = f"""
+[논문 첫머리 — 서지 정보 확인용]
+아래는 각 논문의 시작 부분입니다. 여기서 저자·연도를 확인할 수 있으면 (저자, 연도) 인용과 참고문헌 목록에 사용하세요. 확인되지 않는 정보는 지어내지 마세요.
+{bib_section}
+""" if bib_section else ""
     style_section = build_style_instruction(style_profile) if style_profile else ""
+    guide_line = _PARAGRAPH_GUIDES.get(style, "")
+    length_line = _PARAGRAPH_LENGTHS.get(length, _PARAGRAPH_LENGTHS["표준 (한 단락)"])
     lang_line = ("반드시 영어(English)로 작성하세요. 학술 논문에 적합한 영어 문체를 사용하세요."
                  if language == "English"
                  else "반드시 한국어로 작성하세요.")
     prompt = f"""아래 [참고문헌 내용]만을 근거로 "{topic}" 주제에 대한 학술적 단락을 작성해주세요.
 
 작성 언어: {lang_line}
-작성 유형: {style}
+작성 유형: {style} — {guide_line}
+분량: {length_line}
 {style_section}
 [참고문헌 내용]
 {ref_texts}
-
+{bib_block}
 작성 지침:
 1. 반드시 위 [참고문헌 내용]에 실제로 담긴 정보만 사용하세요. 참고문헌에 없는 사실·수치·주장은 절대 지어내지 마세요.
 2. 참고문헌이 주제를 충분히 뒷받침하지 못하면, 억지로 쓰지 말고 그 사실을 먼저 밝힌 뒤 가능한 범위에서만 작성하세요.
-3. 여러 출처를 단순 나열하지 말고, 논리적으로 연결·종합하여 하나의 매끄러운 단락으로 작성하세요.
-4. 각 주장 문장 끝에 근거가 된 출처를 괄호로 표기하세요. 출처 이름은 아래 [사용 가능한 출처]에 있는 이름을 그대로 사용합니다. 예: (출처 1). 참고문헌 안에서 저자·연도를 확인할 수 있으면 (저자, 연도) 형식을 우선 쓰되, 확인되지 않으면 출처 이름을 그대로 쓰세요.
-5. 객관적이고 학술적인 문체로 3~5문장 작성하세요. ({lang_line})
-6. 단락 아래에 참고문헌 항목(영어면 "References:", 한국어면 "**참고문헌:**")으로 실제 인용한 출처만 나열하세요.
+3. 여러 출처를 단순 나열하지 말고, 논리적으로 연결·종합하여 매끄럽게 작성하세요. 출처 간 관점이 다르면 그 차이도 드러내세요.
+4. 각 주장 문장 끝에 근거가 된 출처를 괄호로 표기하세요. [논문 첫머리]나 참고문헌 안에서 저자·연도를 확인할 수 있으면 APA식 (저자, 연도) 형식을 우선 쓰고, 확인되지 않으면 아래 [사용 가능한 출처]의 이름을 그대로 쓰세요.
+5. 구체적인 연구 결과·수치가 참고문헌에 있으면 뭉뚱그리지 말고 활용하세요 (단, 원문에 있는 그대로만).
+6. 글 아래에 참고문헌 항목(영어면 "References:", 한국어면 "**참고문헌:**")으로 실제 인용한 출처만 나열하세요. 저자·연도·제목이 확인되는 논문은 APA 형식으로, 아니면 출처 이름 그대로 적으세요.
 
 [사용 가능한 출처]
 {source_list}
 """
     response = _call_claude(
         model="claude-sonnet-4-6",
-        max_tokens=2048,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -520,13 +550,15 @@ if mode == "📚 단락 작성 · 논문 분석":
         else:
             topic = st.text_input("작성할 주제를 입력하세요",
                                   placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 style = st.selectbox("단락 유형",
                                      ["이론적 배경", "서론", "선행연구 검토", "논의", "결론"])
             with col2:
                 rag_lang = st.selectbox("작성 언어", ["한국어", "English"])
             with col3:
+                rag_length = st.selectbox("분량", ["표준 (한 단락)", "상세 (2~3단락)"])
+            with col4:
                 top_k = st.slider("참고할 논문 수", 3, 8, 5)
 
             rag_style_profile = load_style_profile(str(STYLE_PROFILE))
@@ -539,14 +571,14 @@ if mode == "📚 단락 작성 · 논문 분석":
 
             if st.button("✍️ 단락 작성", use_container_width=True, disabled=not topic):
                 with st.spinner("관련 문헌 검색 중..."):
-                    results = library.search(topic, top_k=top_k)
+                    results = library.search(topic, top_k=top_k, per_source=2)
                     if not results:
                         # 논문이 다른 언어(예: 영어)일 수 있어 주제를 번역해 재검색
                         try:
                             alt = chat_with_claude([{"role": "user", "content":
                                 f"다음 논문 주제를 검색용으로 번역해줘. 한국어면 영어로, 영어면 한국어로. "
                                 f"핵심 키워드 위주로, 번역문만 출력:\n{topic}"}])
-                            alt_results = library.search(alt.strip(), top_k=top_k)
+                            alt_results = library.search(alt.strip(), top_k=top_k, per_source=2)
                             if alt_results:
                                 results = alt_results
                                 st.caption(f"💡 '{alt.strip()}'(으)로도 검색했어요 (업로드 논문 언어에 맞춰).")
@@ -565,8 +597,10 @@ if mode == "📚 단락 작성 · 논문 분석":
 
                     with st.spinner("단락 작성 중..."):
                         applied_profile = rag_style_profile if use_my_style_rag else None
+                        heads = {r["source"]: library.get_head(r["source"]) for r in results}
                         paragraph = write_paragraph_with_refs(topic, style, results,
-                                                              applied_profile, rag_lang)
+                                                              applied_profile, rag_lang,
+                                                              rag_length, heads)
 
                     st.markdown("### 작성된 단락")
                     st.markdown(paragraph)
@@ -838,8 +872,7 @@ elif mode == "📊 데이터 분석 설계":
     st.subheader("📊 데이터 분석 설계")
     st.caption("Excel, SPSS, 인터뷰 텍스트를 업로드하면 데이터 구조를 파악하고 연구문제와 분석 방법을 제안해드려요.")
 
-    # ── 업로드 홀딩: 한 번 올린 데이터·연구 맥락을 일정 시간 유지 ──
-    HOLD_HOURS = 24
+    # ── 업로드 홀딩: 한 번 올린 데이터·연구 맥락을 새 업로드 전까지 계속 유지 ──
     HELD_DIR = PROJ_DIR / "analysis_upload"
     HELD_META = HELD_DIR / "held.json"
 
@@ -848,12 +881,10 @@ elif mode == "📊 데이터 분석 설계":
         pass
 
     def _held_load():
-        """만료되지 않은 홀딩 메타 반환 (없거나 만료면 None)"""
+        """홀딩 메타 반환 (없으면 None). 만료 없음 — 새 파일로 교체하거나
+        직접 지우기 전까지 프로젝트별로 계속 유지된다."""
         try:
-            m = json.loads(HELD_META.read_text(encoding="utf-8"))
-            if time.time() - float(m.get("saved_at", 0)) > HOLD_HOURS * 3600:
-                return None
-            return m
+            return json.loads(HELD_META.read_text(encoding="utf-8"))
         except Exception:
             return None
 
@@ -878,7 +909,7 @@ elif mode == "📊 데이터 분석 설계":
         "데이터 파일 업로드",
         type=["xlsx", "xls", "sav", "csv", "txt", "docx", "hwp", "hwpx"],
         help="Excel(.xlsx), SPSS(.sav), CSV(.csv), 인터뷰 텍스트(.txt/.docx/.hwp/.hwpx) 지원. "
-             f"한 번 올리면 {HOLD_HOURS}시간 동안 유지돼요 (화면을 옮겨도 다시 올릴 필요 없음).",
+             "한 번 올리면 새 파일을 올리기 전까지 계속 유지돼요 (화면을 옮기거나 재접속해도 그대로).",
     )
 
     if uploaded_data is not None:
@@ -901,10 +932,15 @@ elif mode == "📊 데이터 분석 설계":
     elif _held and _held.get("filename") and (HELD_DIR / _held["filename"]).exists():
         # 홀딩된 파일 복원
         _age = int(time.time() - float(_held["saved_at"]))
-        _age_txt = f"{_age // 60}분 전" if _age < 3600 else f"{_age // 3600}시간 전"
+        if _age < 3600:
+            _age_txt = f"{_age // 60}분 전"
+        elif _age < 86400:
+            _age_txt = f"{_age // 3600}시간 전"
+        else:
+            _age_txt = f"{_age // 86400}일 전"
         _hc1, _hc2 = st.columns([5, 1])
         _hc1.info(f"💾 이전 업로드 유지 중: **{_held['filename']}** ({_age_txt} 업로드) — "
-                  f"새 파일을 올리면 교체돼요. 최대 {HOLD_HOURS}시간 유지.")
+                  "새 파일을 올리기 전까지 계속 유지돼요.")
         if _hc2.button("🗑️ 지우기", key="held_del", help="유지 중인 데이터·연구 맥락 삭제"):
             _held_clear()
             st.rerun()
