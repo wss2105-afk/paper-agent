@@ -269,6 +269,37 @@ def _parse_correction(resp):
     return corrected, explanation
 
 
+# 교정 안전장치: 프롬프트 규칙만으로는 AI가 숫자·기호를 바꾸는 걸 100% 막을 수
+# 없어, 교정 전후를 기계적으로 비교해 달라진 표기를 경고한다.
+_NOTATION_NUM_RE = re.compile(r"\d+(?:[.,]\d+)*%?|(?<![\w.])\.\d+")
+_NOTATION_ANGLE_RE = re.compile(r"<[^<>\n]{1,30}>")
+
+
+def _notation_drift(original, corrected):
+    """교정 전후의 숫자·꺾쇠(<표 1> 등) 표기 차이.
+    (원문에서 사라진 표기, 교정문에 새로 생긴 표기) 반환 — 둘 다 중복 반영."""
+    from collections import Counter
+    o = Counter(_NOTATION_NUM_RE.findall(original)) + Counter(_NOTATION_ANGLE_RE.findall(original))
+    c = Counter(_NOTATION_NUM_RE.findall(corrected)) + Counter(_NOTATION_ANGLE_RE.findall(corrected))
+    return sorted((o - c).elements()), sorted((c - o).elements())
+
+
+def _warn_notation_drift(original, corrected, max_show=8):
+    """숫자·기호 표기가 달라졌으면 경고 표시 (달라진 게 없으면 조용히 넘어감)"""
+    missing, added = _notation_drift(original, corrected)
+    if not missing and not added:
+        return
+    parts = []
+    if missing:
+        shown = ", ".join(f"`{m}`" for m in missing[:max_show])
+        parts.append(f"사라짐: {shown}" + (f" 외 {len(missing) - max_show}개" if len(missing) > max_show else ""))
+    if added:
+        shown = ", ".join(f"`{a}`" for a in added[:max_show])
+        parts.append(f"새로 생김: {shown}" + (f" 외 {len(added) - max_show}개" if len(added) > max_show else ""))
+    st.warning("⚠️ 교정 전후에 숫자·기호 표기가 달라졌어요 — 원문과 대조해 확인해주세요. "
+               + " / ".join(parts))
+
+
 def export_buttons(content, topic, key_prefix):
     """단락 결과 아래에 내보내기 버튼 표시"""
     st.markdown("**내보내기**")
@@ -1555,6 +1586,20 @@ elif mode == "✍️ 글쓰기 교정":
         st.markdown(f"#### 교정 결과 (원본 서식 유지) — 문단 {_ci_res['n']}개 수정, "
                     f"<span style='color:#d32f2f'>빨간색</span> = 수정 부분",
                     unsafe_allow_html=True)
+        _drift_msgs = []
+        for _i, (_o, _c) in enumerate(zip(_ci_res["texts"], _ci_res["corrected"])):
+            _miss, _add = _notation_drift(_o, _c or _o)
+            if _miss or _add:
+                _bits = []
+                if _miss:
+                    _bits.append("사라짐 " + ", ".join(f"`{x}`" for x in _miss[:5]))
+                if _add:
+                    _bits.append("생김 " + ", ".join(f"`{x}`" for x in _add[:5]))
+                _drift_msgs.append(f"문단 {_i + 1} — " + " · ".join(_bits))
+        if _drift_msgs:
+            st.warning("⚠️ 교정 전후에 숫자·기호 표기가 달라진 문단이 있어요 — 원문과 대조해 확인해주세요.\n\n"
+                       + "\n".join(f"- {m}" for m in _drift_msgs[:10])
+                       + (f"\n- ...외 {len(_drift_msgs) - 10}개 문단" if len(_drift_msgs) > 10 else ""))
         _changed_pairs = [(i, o, c) for i, (o, c) in
                           enumerate(zip(_ci_res["texts"], _ci_res["corrected"]))
                           if o.strip() != (c or "").strip()]
@@ -1625,6 +1670,7 @@ elif mode == "✍️ 글쓰기 교정":
     if corr_res:
         st.markdown("#### 교정 결과 — <span style='color:#d32f2f'>빨간색</span> = 수정된 부분",
                     unsafe_allow_html=True)
+        _warn_notation_drift(corr_res["original"], corr_res["corrected"])
         _parts = []
         for _seg, _chg in diff_segments(corr_res["original"], corr_res["corrected"]):
             _esc = _html.escape(_seg).replace("\n", "<br>")
