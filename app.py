@@ -34,7 +34,7 @@ from sjr_data import quartile_badge
 from projects import (
     load_projects, save_projects, project_dir, migrate_legacy,
     load_analyses, save_analysis, delete_analysis, tables_from_record,
-    MAX_PROJECTS,
+    update_analysis_interp, MAX_PROJECTS,
 )
 
 load_dotenv()
@@ -1027,6 +1027,25 @@ elif mode == "📊 데이터 분석 설계":
 
     codebook_text = CODEBOOK_FILE.read_text(encoding="utf-8") if CODEBOOK_FILE.exists() else ""
 
+    def _interp_stats(res_summary):
+        """실행 결과를 논문용 결과 문장으로 해석 (수동/제안 실행·저장 기록 공용)"""
+        _ctx = f"\n연구 맥락: {research_context}" if research_context else ""
+        _cb = (f"\n\n## 코딩북 (변수의 실제 의미 — 해석에 반영할 것)\n{codebook_text[:3000]}"
+               if codebook_text else "")
+        _p = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{_ctx}{_cb}
+
+## 분석 결과
+{res_summary}
+
+작성 지침:
+1. APA 스타일 통계치 표기(t, F, χ², β, p, 효과크기 등)를 포함한 학술적 한국어 문장으로 서술하세요.
+2. 효과크기의 실질적 의미를 함께 해석하세요.
+3. 유의하지 않은 결과도 있는 그대로 서술하세요. 결과를 긍정적으로 왜곡하지 마세요.
+4. 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
+5. 마지막에 '해석 시 유의점' 1~2가지를 덧붙이세요."""
+        with st.spinner("Claude가 결과를 논문 문장으로 작성 중..."):
+            return chat_with_claude([{"role": "user", "content": _p}])
+
     if uploaded_data:
         try:
             with st.spinner("파일 읽는 중..."):
@@ -1146,25 +1165,6 @@ elif mode == "📊 데이터 분석 설계":
 
                 num_cols = list(data.select_dtypes(include="number").columns)
                 all_cols = list(data.columns)
-
-                def _interp_stats(res_summary):
-                    """실행 결과를 논문용 결과 문장으로 해석 (수동/제안 실행 공용)"""
-                    _ctx = f"\n연구 맥락: {research_context}" if research_context else ""
-                    _cb = (f"\n\n## 코딩북 (변수의 실제 의미 — 해석에 반영할 것)\n{codebook_text[:3000]}"
-                           if codebook_text else "")
-                    _p = f"""다음은 실제 데이터로 방금 실행한 통계 분석 결과입니다. 이 결과를 논문의 '연구 결과' 절에 쓸 수 있도록 해석해주세요.{_ctx}{_cb}
-
-## 분석 결과
-{res_summary}
-
-작성 지침:
-1. APA 스타일 통계치 표기(t, F, χ², β, p, 효과크기 등)를 포함한 학술적 한국어 문장으로 서술하세요.
-2. 효과크기의 실질적 의미를 함께 해석하세요.
-3. 유의하지 않은 결과도 있는 그대로 서술하세요. 결과를 긍정적으로 왜곡하지 마세요.
-4. 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
-5. 마지막에 '해석 시 유의점' 1~2가지를 덧붙이세요."""
-                    with st.spinner("Claude가 결과를 논문 문장으로 작성 중..."):
-                        return chat_with_claude([{"role": "user", "content": _p}])
 
                 def _proposal_fn(spec):
                     """설계 제안 JSON 스펙 → 실행 함수 (변수 검증 포함). 불가하면 None."""
@@ -1377,6 +1377,17 @@ elif mode == "📊 데이터 분석 설계":
                     if saved["interp"]:
                         st.markdown("#### 📝 논문용 결과 해석")
                         st.markdown(saved["interp"])
+                    elif st.button("🤖 논문용 해석 생성 (Word 저장에 함께 담겨요)",
+                                   key="stats_gen_interp"):
+                        saved["interp"] = _interp_stats(saved["result"]["summary"])
+                        st.session_state["stats_run"] = saved
+                        try:
+                            _recs = load_analyses(PROJ_DIR)
+                            if _recs and _recs[0].get("summary") == saved["result"]["summary"]:
+                                update_analysis_interp(PROJ_DIR, 0, saved["interp"])
+                        except Exception:
+                            pass
+                        st.rerun()
                     _sd1, _sd2 = st.columns(2)
                     _safe_name = re.sub(r'[\\/:*?"<>|]', "_", saved["analysis"])[:30]
                     try:
@@ -1420,6 +1431,10 @@ elif mode == "📊 데이터 분석 설계":
             if rec.get("interp"):
                 st.markdown("**📝 논문용 결과 해석**")
                 st.markdown(rec["interp"])
+            elif rec.get("summary") and st.button(
+                    "🤖 논문용 해석 생성 (Word 저장에 함께 담겨요)", key=f"rec_interp_{ridx}"):
+                update_analysis_interp(PROJ_DIR, ridx, _interp_stats(rec["summary"]))
+                st.rerun()
             dcol1, dcol2, dcol3 = st.columns([1, 1, 1])
             export_text = (
                 f"[{rec['time']}] {rec['analysis']}{note}\n\n"

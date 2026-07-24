@@ -104,6 +104,15 @@ def save_analysis(proj_dir, analysis_name, result, interp=None, note=""):
         json.dumps(records, ensure_ascii=False), encoding="utf-8")
 
 
+def update_analysis_interp(proj_dir, index, interp):
+    """저장된 분석 기록에 논문용 해석을 나중에 채워넣는다."""
+    records = load_analyses(proj_dir)
+    if 0 <= index < len(records):
+        records[index]["interp"] = interp
+        _analyses_file(proj_dir).write_text(
+            json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+
 def delete_analysis(proj_dir, index):
     records = load_analyses(proj_dir)
     if 0 <= index < len(records):
