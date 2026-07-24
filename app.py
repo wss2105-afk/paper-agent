@@ -15,7 +15,8 @@ from dotenv import load_dotenv
 import streamlit.components.v1 as components
 from rag import ReferenceLibrary
 from scholar import search_papers
-from export import to_word, to_markdown, to_word_redline, to_hwpx_redline, diff_segments
+from export import (to_word, to_markdown, to_word_redline, to_hwpx_redline,
+                    diff_segments, to_stats_docx)
 import inplace_redline as ir
 import journal_format as jf
 from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats, load_codebook_text
@@ -1376,8 +1377,23 @@ elif mode == "📊 데이터 분석 설계":
                     if saved["interp"]:
                         st.markdown("#### 📝 논문용 결과 해석")
                         st.markdown(saved["interp"])
-                        st.download_button(
-                            "📋 결과 해석 저장 (.txt)", saved["interp"],
+                    _sd1, _sd2 = st.columns(2)
+                    _safe_name = re.sub(r'[\\/:*?"<>|]', "_", saved["analysis"])[:30]
+                    try:
+                        _sd1.download_button(
+                            "📄 Word로 저장 (.docx, 한글에서 열림)",
+                            data=to_stats_docx(saved["analysis"], saved["result"]["tables"],
+                                               saved["result"]["summary"], saved["interp"] or "",
+                                               note=uploaded_data.name if uploaded_data is not None else ""),
+                            file_name=f"분석결과_{_safe_name}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            key="stats_docx_dl",
+                        )
+                    except Exception:
+                        _sd1.caption("(.docx 생성 실패 — txt 저장을 이용해주세요)")
+                    if saved["interp"]:
+                        _sd2.download_button(
+                            "📋 결과 해석만 (.txt)", saved["interp"],
                             file_name="통계결과해석.txt", mime="text/plain",
                             key="stats_interp_dl",
                         )
@@ -1404,18 +1420,31 @@ elif mode == "📊 데이터 분석 설계":
             if rec.get("interp"):
                 st.markdown("**📝 논문용 결과 해석**")
                 st.markdown(rec["interp"])
-            dcol1, dcol2 = st.columns([1, 1])
+            dcol1, dcol2, dcol3 = st.columns([1, 1, 1])
             export_text = (
                 f"[{rec['time']}] {rec['analysis']}{note}\n\n"
                 f"== 결과 요약 ==\n{rec.get('summary', '')}\n\n"
                 + (f"== 논문용 해석 ==\n{rec['interp']}" if rec.get("interp") else "")
             )
+            _rec_fname = f"분석결과_{rec['time'].replace(':', '').replace(' ', '_')}"
             dcol1.download_button(
                 "📋 저장 (.txt)", export_text,
-                file_name=f"분석결과_{rec['time'].replace(':', '').replace(' ', '_')}.txt",
+                file_name=f"{_rec_fname}.txt",
                 mime="text/plain", key=f"rec_dl_{ridx}",
             )
-            if dcol2.button("🗑️ 삭제", key=f"rec_del_{ridx}"):
+            try:
+                dcol2.download_button(
+                    "📄 Word (.docx, 한글 호환)",
+                    data=to_stats_docx(rec["analysis"], tables_from_record(rec),
+                                       rec.get("summary", ""), rec.get("interp") or "",
+                                       note=f"{rec['time']}{note}"),
+                    file_name=f"{_rec_fname}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"rec_docx_{ridx}",
+                )
+            except Exception:
+                dcol2.caption("(.docx 생성 실패)")
+            if dcol3.button("🗑️ 삭제", key=f"rec_del_{ridx}"):
                 delete_analysis(PROJ_DIR, ridx)
                 st.rerun()
 

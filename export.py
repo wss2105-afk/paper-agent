@@ -205,6 +205,80 @@ def to_hwpx_redline(original: str, corrected: str, explanation: str = "") -> byt
     return out.getvalue()
 
 
+def _fmt_cell(v) -> str:
+    """표 셀 값 → 문자열 (float는 유효숫자 4자리, NaN은 빈칸)"""
+    import math
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        if math.isnan(v):
+            return ""
+        s = f"{v:.4f}".rstrip("0").rstrip(".")
+        return s if s not in ("", "-") else "0"
+    return str(v)
+
+
+def to_stats_docx(title: str, tables: dict, summary: str = "",
+                  interp: str = "", note: str = "") -> bytes:
+    """통계 분석 결과(결과표 + 요약 + 논문용 해석)를 Word(.docx)로 내보낸다.
+    표는 실제 Word 표(Table Grid)로 만들어 한글(HWP)에서도 그대로 열린다."""
+    import pandas as pd
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    # 한글(HWP) 호환을 위해 기본 글꼴에 한글 글꼴(eastAsia)을 명시
+    normal = doc.styles["Normal"]
+    normal.font.name = "맑은 고딕"
+    normal.font.size = Pt(10)
+    normal._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "맑은 고딕")
+
+    heading = doc.add_heading(title, level=1)
+    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if note:
+        sub = doc.add_paragraph(note)
+        sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sub.runs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+        sub.runs[0].font.size = Pt(9)
+    doc.add_paragraph()
+
+    for tname, tdf in (tables or {}).items():
+        doc.add_heading(str(tname), level=2)
+        df = tdf
+        include_index = bool(df.index.name) or not isinstance(df.index, pd.RangeIndex)
+        cols = ([str(df.index.name or "")] if include_index else []) + [str(c) for c in df.columns]
+        table = doc.add_table(rows=1, cols=max(1, len(cols)))
+        table.style = "Table Grid"
+        for j, c in enumerate(cols):
+            cell = table.rows[0].cells[j]
+            cell.text = c
+            for p in cell.paragraphs:
+                for r in p.runs:
+                    r.font.bold = True
+        for i in range(len(df)):
+            row = table.add_row().cells
+            vals = ([df.index[i]] if include_index else []) + list(df.iloc[i])
+            for j, v in enumerate(vals):
+                row[j].text = _fmt_cell(v)
+        doc.add_paragraph()
+
+    if summary.strip():
+        doc.add_heading("결과 요약", level=2)
+        for line in summary.strip().splitlines():
+            if line.strip():
+                doc.add_paragraph(line.rstrip())
+
+    if interp and interp.strip():
+        doc.add_heading("논문용 결과 해석", level=2)
+        for line in interp.strip().splitlines():
+            line = line.strip().replace("**", "")
+            if line:
+                doc.add_paragraph(line)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def to_markdown(title: str, content: str, topic: str = "") -> str:
     lines = [f"# {title}"]
     if topic:
