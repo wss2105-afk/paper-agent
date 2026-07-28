@@ -121,6 +121,34 @@ def delete_analysis(proj_dir, index):
             json.dumps(records, ensure_ascii=False), encoding="utf-8")
 
 
+def _design_file(proj_dir):
+    return Path(proj_dir) / "design.json"
+
+
+def save_design(proj_dir, text, specs=None, note=""):
+    """데이터 분석 설계 제안(연구문제·분석 방법)을 프로젝트별로 저장.
+    논문 구조 설계 모드에서 연구문제를 그대로 반영할 때 사용한다."""
+    _design_file(proj_dir).write_text(json.dumps({
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "note": note,
+        "text": text,
+        "specs": specs or [],
+    }, ensure_ascii=False), encoding="utf-8")
+
+
+def load_design(proj_dir):
+    """저장된 분석 설계 반환 (없거나 깨졌으면 None)."""
+    f = _design_file(proj_dir)
+    if f.exists():
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and d.get("text"):
+                return d
+        except Exception:
+            return None
+    return None
+
+
 def tables_from_record(record):
     """저장된 레코드의 표들을 DataFrame으로 복원."""
     return {k: pd.read_json(StringIO(v), orient="split")

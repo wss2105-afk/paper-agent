@@ -34,7 +34,7 @@ from sjr_data import quartile_badge
 from projects import (
     load_projects, save_projects, project_dir, migrate_legacy,
     load_analyses, save_analysis, delete_analysis, tables_from_record,
-    update_analysis_interp, MAX_PROJECTS,
+    update_analysis_interp, save_design, load_design, MAX_PROJECTS,
 )
 
 load_dotenv()
@@ -467,6 +467,8 @@ with st.sidebar:
         ) and not is_cur:
             st.session_state["project_id"] = p["id"]
             st.session_state.pop("stats_run", None)  # 이전 프로젝트 결과 잔상 제거
+            st.session_state.pop("design_result", None)  # 분석 설계도 프로젝트별
+            st.session_state.pop("design_specs", None)
             st.rerun()
     _cur_proj = next(p for p in PROJECTS if p["id"] == st.session_state["project_id"])
     st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**")
@@ -1146,6 +1148,19 @@ elif mode == "📊 데이터 분석 설계":
                     design_text = result[:_mspec.start()].strip()
                 st.session_state["design_result"] = design_text
                 st.session_state["design_specs"] = design_specs if data_type == "quantitative" else []
+                try:  # 프로젝트별 영구 저장 → 논문 구조 설계에서 연구문제 반영에 사용
+                    save_design(PROJ_DIR, design_text,
+                                st.session_state["design_specs"],
+                                note=uploaded_data.name)
+                except Exception:
+                    pass
+
+            if not st.session_state.get("design_result"):
+                # 재접속/화면 이동 시 마지막 분석 설계 복원
+                _saved_design = load_design(PROJ_DIR)
+                if _saved_design:
+                    st.session_state["design_result"] = _saved_design["text"]
+                    st.session_state["design_specs"] = _saved_design.get("specs") or []
 
             if st.session_state.get("design_result"):
                 st.markdown("### 분석 설계 제안")
@@ -1470,8 +1485,35 @@ elif mode == "🏗️ 논문 구조 설계":
                           placeholder="예: AI 튜터링 시스템이 학습 동기에 미치는 영향")
     research_type = st.selectbox("연구 유형",
                                  ["양적 연구", "질적 연구", "혼합 연구", "문헌 연구", "개발 연구"])
-    if st.button("구조 설계 시작") and topic:
-        prompt = f"다음 연구 주제로 {research_type} 논문 구조를 설계해주세요.\n\n주제: {topic}\n\n각 섹션별 핵심 내용과 작성 전략을 포함해주세요."
+
+    # 데이터 분석 설계에서 저장한 연구문제·분석 방법 반영 (프로젝트별)
+    _design = load_design(PROJ_DIR)
+    use_design = False
+    if _design:
+        _dnote = f" · {_design['note']}" if _design.get("note") else ""
+        use_design = st.checkbox(
+            f"📊 데이터 분석 설계의 연구문제 반영 ({_design.get('time', '')}{_dnote})",
+            value=True,
+            help="데이터 분석 설계에서 제안받은 연구문제·분석 방법에 맞춰 논문 구조를 설계해요. "
+                 "연구문제는 그대로 사용되고, 연구방법·결과 섹션이 분석 방법과 대응되게 구성됩니다.",
+        )
+        with st.expander("반영될 분석 설계 보기"):
+            st.markdown(_design["text"])
+    else:
+        st.caption("💡 '📊 데이터 분석 설계'에서 분석 설계를 먼저 받으면, 그 연구문제에 맞춘 구조를 설계할 수 있어요.")
+
+    if st.button("구조 설계 시작") and (topic or (use_design and _design)):
+        topic_line = topic if topic else "(아래 분석 설계의 연구문제 참조)"
+        prompt = f"다음 연구 주제로 {research_type} 논문 구조를 설계해주세요.\n\n주제: {topic_line}\n\n"
+        if use_design and _design:
+            prompt += (
+                "아래는 이 연구의 데이터로 수립한 분석 설계입니다. 논문 구조는 반드시 "
+                "여기 제시된 연구문제를 그대로 사용하고(임의로 바꾸거나 새로 만들지 말 것), "
+                "서론에는 연구문제 제시를, 연구방법·결과 섹션은 각 연구문제의 분석 방법과 "
+                "1:1로 대응되게 설계하세요.\n\n"
+                f"## 분석 설계 (연구문제·분석 방법)\n{_design['text'][:6000]}\n\n"
+            )
+        prompt += "각 섹션별 핵심 내용과 작성 전략을 포함해주세요."
         st.session_state.messages.append({"role": "user", "content": prompt})
 
 # ── 글쓰기 교정 ───────────────────────────────────────────────
