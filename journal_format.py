@@ -88,18 +88,48 @@ def build_docx_from_markdown(md_text, layout=None, title=""):
     if title:
         h = doc.add_heading(title, level=0)
 
-    for raw in md_text.splitlines():
-        line = raw.rstrip()
+    def _inline(s):
+        """마크다운 강조 마커 제거 (**굵게**, *기울임*) — Word엔 텍스트만."""
+        s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+        s = re.sub(r"(?<![\w*])\*([^*\n]+?)\*(?![\w*])", r"\1", s)
+        return s
+
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
         if not line.strip():
+            i += 1
+            continue
+        if line.lstrip().startswith("|"):
+            # 마크다운 표 → 실제 Word 표 (구분선 행 |---|---| 은 건너뜀)
+            rows = []
+            while i < len(lines) and lines[i].lstrip().startswith("|"):
+                cells = [_inline(c.strip())
+                         for c in lines[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+                    rows.append(cells)
+                i += 1
+            if rows:
+                ncol = max(len(r) for r in rows)
+                tbl = doc.add_table(rows=len(rows), cols=ncol)
+                try:
+                    tbl.style = "Table Grid"
+                except Exception:
+                    pass
+                for ri, r in enumerate(rows):
+                    for ci in range(ncol):
+                        tbl.cell(ri, ci).text = r[ci] if ci < len(r) else ""
             continue
         if line.startswith("### "):
-            doc.add_heading(line[4:].strip(), level=3)
+            doc.add_heading(_inline(line[4:].strip()), level=3)
         elif line.startswith("## "):
-            doc.add_heading(line[3:].strip(), level=2)
+            doc.add_heading(_inline(line[3:].strip()), level=2)
         elif line.startswith("# "):
-            doc.add_heading(line[2:].strip(), level=1)
+            doc.add_heading(_inline(line[2:].strip()), level=1)
         else:
-            doc.add_paragraph(line)
+            doc.add_paragraph(_inline(line))
+        i += 1
 
     buf = io.BytesIO()
     doc.save(buf)

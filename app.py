@@ -469,6 +469,7 @@ with st.sidebar:
             st.session_state.pop("stats_run", None)  # 이전 프로젝트 결과 잔상 제거
             st.session_state.pop("design_result", None)  # 분석 설계도 프로젝트별
             st.session_state.pop("design_specs", None)
+            st.session_state.pop("mr_draft", None)  # 연구방법·결과 초안도 프로젝트별
             st.rerun()
     _cur_proj = next(p for p in PROJECTS if p["id"] == st.session_state["project_id"])
     st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**")
@@ -1476,6 +1477,115 @@ elif mode == "📊 데이터 분석 설계":
                 dcol2.caption("(.docx 생성 실패)")
             if dcol3.button("🗑️ 삭제", key=f"rec_del_{ridx}"):
                 delete_analysis(PROJ_DIR, ridx)
+                st.rerun()
+
+    # ── 연구방법·통계 결과 절 작성 ────────────────────────────
+    if saved_records:
+        st.divider()
+        st.subheader("✍️ 연구방법·통계 결과 작성")
+        st.caption("저장된 통계 분석 결과를 바탕으로 논문의 '연구방법(자료 분석)' 절과 "
+                   "'연구 결과' 절 초안을 실제 수치 그대로 작성해드려요.")
+
+        MR_DRAFT_FILE = PROJ_DIR / "method_result_draft.md"
+
+        _rec_labels = [f"{i + 1}. [{r['time']}] {r['analysis']}" for i, r in enumerate(saved_records)]
+        _mr_sel = st.multiselect(
+            "포함할 분석 결과", _rec_labels, default=_rec_labels,
+            help="논문에 담을 분석만 남기세요. 같은 분석을 여러 번 실행했다면 최신 것 하나만 남기는 게 좋아요.",
+        )
+        _mr_profile = load_style_profile(str(STYLE_PROFILE))
+        _mr_style = st.checkbox(
+            "🖊️ 내 문체 반영", value=bool(_mr_profile), disabled=not _mr_profile, key="mr_style",
+            help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not _mr_profile
+            else "내 문체·어휘로 작성합니다.",
+        )
+
+        if st.button("✍️ 연구방법·결과 작성", use_container_width=True, disabled=not _mr_sel):
+            _blocks = []
+            for _i in sorted(_rec_labels.index(_s) for _s in _mr_sel):
+                _r = saved_records[_i]
+                try:
+                    _tbl = "\n\n".join(f"[표] {_k}\n{_v.to_string()}"
+                                       for _k, _v in tables_from_record(_r).items())
+                except Exception:
+                    _tbl = ""
+                _b = f"### 분석: {_r['analysis']} ({_r['time']})\n결과 요약:\n{_r.get('summary', '')}"
+                if _tbl:
+                    _b += f"\n\n{_tbl[:3500]}"
+                if _r.get("interp"):
+                    _b += f"\n\n(기존 해석 참고)\n{_r['interp'][:1500]}"
+                _blocks.append(_b)
+
+            _ctx = f"\n연구 맥락: {research_context}" if research_context else ""
+            _rq = ""
+            _dsn = load_design(PROJ_DIR)
+            if _dsn:
+                _rq = f"\n\n## 연구문제·분석 설계 (절 구성의 기준으로 삼을 것)\n{_dsn['text'][:3000]}"
+            _cb = (f"\n\n## 코딩북 (변수의 실제 의미 — 반드시 반영)\n{codebook_text[:3000]}"
+                   if codebook_text else "")
+            _style = build_style_instruction(_mr_profile) if (_mr_style and _mr_profile) else ""
+
+            _mr_prompt = f"""아래는 실제 데이터로 실행한 통계 분석 결과입니다. 이를 바탕으로 논문 원고에 바로 쓸 수 있는 두 개의 절을 작성해주세요.{_ctx}{_rq}{_cb}
+
+## 실행된 분석 결과
+{chr(10).join(_blocks)[:30000]}
+
+작성 형식 (마크다운, ## 절 제목 / ### 하위절 제목):
+
+## 연구방법 — 자료 분석
+- 각 연구문제(또는 분석 목적)에 어떤 통계 분석을 왜 사용했는지 서술하세요.
+- 분석 절차, 유의수준(p < .05), 사용한 효과크기 지표를 언급하세요.
+- 분석 도구는 Python 기반 통계 패키지(SciPy, statsmodels 등)로 사실대로 표기하세요 (SPSS 등으로 바꿔 쓰지 말 것).
+
+## 연구 결과
+- 연구문제 순서에 맞게 하위절(###)로 구성하세요. 연구문제가 명시돼 있으면 그 번호·문장을 그대로 사용하세요.
+- APA 스타일 통계치 표기(M, SD, t, F, χ², r, β, p, 효과크기)를 포함한 학술적 한국어 문장으로 서술하세요.
+- 표를 인용할 때는 서술 순서대로 <표 1>, <표 2> 번호를 붙이고, 어느 분석의 표인지 알 수 있게 표 제목을 함께 적으세요.
+- 기술통계(평균·표준편차)가 표에 있으면 결과 서술에 함께 제시하세요.
+- 유의하지 않은 결과도 있는 그대로 서술하고, 위 분석 결과에 없는 수치·통계량은 절대 만들어내지 마세요.
+{_style}"""
+
+            with st.spinner("Claude가 연구방법·결과 절을 작성 중..."):
+                _mr_out, _mr_trunc = chat_with_claude(
+                    [{"role": "user", "content": _mr_prompt}], return_truncated=True)
+            if _mr_trunc:
+                st.warning("⚠️ 출력이 길이 한도에 걸려 끝이 잘렸을 수 있어요. 포함할 분석 수를 줄여 다시 실행해보세요.")
+            try:
+                MR_DRAFT_FILE.write_text(_mr_out, encoding="utf-8")
+            except Exception:
+                pass
+            st.session_state["mr_draft"] = _mr_out
+
+        _mr_draft = st.session_state.get("mr_draft")
+        if not _mr_draft and MR_DRAFT_FILE.exists():
+            try:
+                _mr_draft = MR_DRAFT_FILE.read_text(encoding="utf-8")
+            except Exception:
+                _mr_draft = None
+        if _mr_draft:
+            st.markdown("### 📄 작성된 초안")
+            st.markdown(_mr_draft)
+            _mc1, _mc2, _mc3 = st.columns([1, 1, 1])
+            _mc1.download_button(
+                "📋 저장 (.txt)", _mr_draft,
+                file_name="연구방법_결과_초안.txt", mime="text/plain", key="mr_txt",
+            )
+            try:
+                _mc2.download_button(
+                    "📄 Word (.docx, 한글 호환)",
+                    data=jf.build_docx_from_markdown(_mr_draft, title="연구방법 및 연구 결과 (초안)"),
+                    file_name="연구방법_결과_초안.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="mr_docx",
+                )
+            except Exception:
+                _mc2.caption("(.docx 생성 실패)")
+            if _mc3.button("🗑️ 초안 지우기", key="mr_del"):
+                st.session_state.pop("mr_draft", None)
+                try:
+                    MR_DRAFT_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 st.rerun()
 
 # ── 논문 구조 설계 ────────────────────────────────────────────
