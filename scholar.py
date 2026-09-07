@@ -23,7 +23,8 @@ def _get_headers():
 
 
 def search_semantic_scholar(query, limit=10, retries=2):
-    params = {"query": query, "fields": FIELDS, "limit": limit}
+    # Semantic Scholar는 따옴표 구문을 지원하지 않으므로 제거
+    params = {"query": query.replace('"', " "), "fields": FIELDS, "limit": limit}
     for attempt in range(retries + 1):
         try:
             response = requests.get(
@@ -92,11 +93,13 @@ def _abstract_from_inverted(inv):
 
 
 def search_openalex(query, limit=10, retries=2):
-    """OpenAlex 검색 — API 키 불필요, 요청 제한이 관대해 기본 소스로 적합"""
+    """OpenAlex 검색 — API 키 불필요, 요청 제한이 관대해 기본 소스로 적합.
+    전문(full-text) 검색은 인용 가중치가 커서 무관한 유명 논문이 상위에 오므로,
+    제목+초록 한정 검색으로 주제 적합 풀을 만든 뒤 관련도순·인용순을 섞는다."""
+    q = re.sub(r"[,:]", " ", query).strip()  # 콤마·콜론은 filter 문법과 충돌
     params = {
-        "search": query,
-        "per-page": min(max(limit, 1), 25),
-        "filter": "type:article",
+        "filter": f"title_and_abstract.search:{q},type:article",
+        "per-page": 25,
         "select": OPENALEX_SELECT,
         "mailto": "wss2105@gmail.com",  # polite pool → 더 안정적인 응답
     }
@@ -110,7 +113,19 @@ def search_openalex(query, limit=10, retries=2):
                     continue
                 raise Exception("OpenAlex API 한도 초과. 잠시 후 다시 시도해주세요.")
             response.raise_for_status()
+            # 관련도순(기본 정렬) 그대로 사용 — 인용순을 섞으면 경계선 매치의
+            # 유명 논문이 끼어들어 주제 적합성이 떨어진다 (영향력 판단은 하류의
+            # Claude 재정렬·SSCI 모드가 담당)
             works = response.json().get("results", [])
+            if not works and '"' in q:
+                # 따옴표 구문 검색이 과하게 좁으면 따옴표를 풀고 한 번 더
+                params_loose = dict(params)
+                params_loose["filter"] = (
+                    f"title_and_abstract.search:{q.replace(chr(34), ' ')},type:article")
+                loose = requests.get(OPENALEX_URL, params=params_loose,
+                                     headers=_get_headers(), timeout=15)
+                if loose.ok:
+                    works = loose.json().get("results", [])
             papers = []
             for w in works[:limit]:
                 authorships = w.get("authorships") or []
@@ -185,11 +200,12 @@ def search_papers(query, limit=10, source="Semantic Scholar"):
         return search_arxiv(query, limit)
     elif source == "OpenAlex":
         return search_openalex(query, limit)
-    else:  # 전체 / 둘 다: OpenAlex + Semantic Scholar + arXiv 병합
+    else:  # 전체 / 둘 다: OpenAlex + Semantic Scholar 병합
+        # arXiv는 교육 분야 주제에서 무관한 CS 프리프린트가 섞여 기본 병합에서 제외
+        # (소스 선택에서 arXiv를 직접 고르면 여전히 사용 가능)
         buckets = []
         for fn, n in ((search_openalex, limit),
-                      (search_semantic_scholar, max(limit // 2, 3)),
-                      (search_arxiv, 3)):
+                      (search_semantic_scholar, max(limit // 2, 3))):
             try:
                 buckets.append(fn(query, n))
             except Exception:

@@ -117,8 +117,9 @@ def _gen_search_queries(topic, my_topic=""):
 규칙:
 - 정확히 2~3개, 각각 2~6단어의 영어 키워드 구.
 - 서로 다른 각도로: (1) 핵심 개념 직역, (2) 동의어나 학계에서 통용되는 인접 개념, (3) 방법·맥락을 결합한 구체화.
+- 각 검색어에서 가장 핵심적인 다단어 개념 딱 하나만 큰따옴표로 감싸세요. 예: "blended learning" motivation middle school
 - 존재하지 않는 약어를 만들지 마세요.
-- JSON 배열만 출력하세요. 예: ["query one", "query two"]"""
+- JSON 배열만 출력하세요. 예: ["\\"query phrase\\" other words", "query two"]"""
     try:
         resp = chat_with_claude([{"role": "user", "content": prompt}])
         m = re.search(r"\[.*?\]", resp, re.S)
