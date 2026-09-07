@@ -37,6 +37,23 @@
 ================================================================
 
 ---- 2026-09-07 ----
+- [문헌 추천 기능 업그레이드] (사용자: "문헌추천기능이 잘 안되니..
+  alphaXiv/OpenResearch 참조해서 업데이트 가능하니?")
+  · OpenResearch는 Rust 기반 연구 에이전트 워크스페이스라 코드 이식은 불가.
+    대신 orx-lit-review 스킬의 검색 전략 3가지를 이식:
+  · scholar.py: OpenAlex 소스 추가(API 키 불필요, mailto polite pool,
+    abstract_inverted_index 복원, type:article 필터). DOI→정규화 제목 순
+    dedup_papers(), 라운드로빈 interleave(). "전체" 모드 = OpenAlex(limit)
+    + Semantic Scholar(limit/2) + arXiv(3) 병합 후 중복 제거.
+  · app.py: 🧠 스마트 검색(기본 ON) — Claude가 한국어 주제를 영어 학술
+    검색어 2~3개로 확장(_gen_search_queries, JSON 배열 파싱, 실패 시 원문
+    1개 fallback) → 검색어별 검색 → interleave+dedup → num_results 절단.
+    소스 선택지에 OpenAlex/전체 추가(기본 전체). cached_search version=6.
+  · 배경: 기존엔 Semantic Scholar 단독(무키 429 잦음) + 영어 키워드 직접
+    입력 필요 → "잘 안 됨"의 주원인으로 추정.
+  · 검증: py_compile 통과. (OpenAlex 라이브 호출 테스트는 사용자가 중단해
+    미실행 — 배포 후 실제 화면에서 확인 필요)
+  · 커밋 0c96829 push → Railway 자동 재배포.
 - [버그 수정: SPSS(.sav) 업로드 시 "파일 로드 오류: 'list' object has no
   attribute 'get'"] (사용자 보고: 데이터 분석 설계에서 파일 로드 오류)
   · 원인: pyreadstat의 meta.column_labels는 dict가 아니라 리스트인데
