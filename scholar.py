@@ -1,10 +1,14 @@
 import os
+import re
 import time
 import requests
 import arxiv as arxiv_lib
 
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 FIELDS = "title,authors,year,abstract,citationCount,url,externalIds,venue,journal,publicationVenue"
+OPENALEX_URL = "https://api.openalex.org/works"
+OPENALEX_SELECT = ("id,doi,title,display_name,publication_year,cited_by_count,"
+                   "authorships,primary_location,abstract_inverted_index")
 
 
 def _get_headers():
@@ -76,25 +80,124 @@ def search_arxiv(query, limit=10):
         raise Exception(f"arXiv 검색 오류: {e}")
 
 
+def _abstract_from_inverted(inv):
+    """OpenAlex의 abstract_inverted_index(단어→위치 목록)를 원문 문자열로 복원"""
+    if not inv:
+        return ""
+    pos = {}
+    for word, idxs in inv.items():
+        for i in idxs:
+            pos[i] = word
+    return " ".join(pos[i] for i in sorted(pos))
+
+
+def search_openalex(query, limit=10, retries=2):
+    """OpenAlex 검색 — API 키 불필요, 요청 제한이 관대해 기본 소스로 적합"""
+    params = {
+        "search": query,
+        "per-page": min(max(limit, 1), 25),
+        "filter": "type:article",
+        "select": OPENALEX_SELECT,
+        "mailto": "wss2105@gmail.com",  # polite pool → 더 안정적인 응답
+    }
+    for attempt in range(retries + 1):
+        try:
+            response = requests.get(OPENALEX_URL, params=params,
+                                    headers=_get_headers(), timeout=15)
+            if response.status_code == 429:
+                if attempt < retries:
+                    time.sleep(2)
+                    continue
+                raise Exception("OpenAlex API 한도 초과. 잠시 후 다시 시도해주세요.")
+            response.raise_for_status()
+            works = response.json().get("results", [])
+            papers = []
+            for w in works[:limit]:
+                authorships = w.get("authorships") or []
+                names = [a.get("author", {}).get("display_name", "")
+                         for a in authorships[:3]]
+                authors = ", ".join(n for n in names if n)
+                if len(authorships) > 3:
+                    authors += " et al."
+                abstract = _abstract_from_inverted(
+                    w.get("abstract_inverted_index")) or "초록 없음"
+                src = (w.get("primary_location") or {}).get("source") or {}
+                papers.append({
+                    "title": w.get("display_name") or w.get("title") or "제목 없음",
+                    "authors": authors or "저자 미상",
+                    "year": w.get("publication_year") or "연도 미상",
+                    "abstract": abstract[:500] + ("..." if len(abstract) > 500 else ""),
+                    "citations": w.get("cited_by_count", 0),
+                    "url": w.get("doi") or w.get("id") or "",
+                    "journal": src.get("display_name") or "",
+                    "source": "OpenAlex",
+                })
+            return papers
+        except requests.exceptions.Timeout:
+            if attempt < retries:
+                time.sleep(2)
+                continue
+            raise Exception("OpenAlex 검색 시간 초과.")
+        except requests.exceptions.ConnectionError:
+            raise Exception("네트워크 연결 오류.")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"OpenAlex 검색 오류: {e}")
+    raise Exception("OpenAlex 검색 실패. 잠시 후 다시 시도해주세요.")
+
+
+def _norm_title(title):
+    return re.sub(r"[^a-z0-9가-힣]", "", str(title).lower())
+
+
+def dedup_papers(papers):
+    """DOI → 정규화 제목 순으로 중복 제거 (앞선 항목 우선)"""
+    seen, out = set(), []
+    for p in papers:
+        keys = []
+        url = str(p.get("url") or "").lower()
+        if "doi.org" in url:
+            keys.append(url)
+        tkey = _norm_title(p.get("title", ""))
+        if tkey:
+            keys.append("t:" + tkey)
+        if any(k in seen for k in keys):
+            continue
+        seen.update(keys)
+        out.append(p)
+    return out
+
+
+def interleave(lists):
+    """여러 결과 목록을 라운드로빈으로 섞어 소스·검색어 다양성 유지"""
+    merged = []
+    longest = max((len(l) for l in lists), default=0)
+    for i in range(longest):
+        for l in lists:
+            if i < len(l):
+                merged.append(l[i])
+    return merged
+
+
 def search_papers(query, limit=10, source="Semantic Scholar"):
     if source == "Semantic Scholar":
         return search_semantic_scholar(query, limit)
     elif source == "arXiv":
         return search_arxiv(query, limit)
-    else:  # 둘 다
-        half = max(limit // 2, 3)
-        results = []
-        try:
-            results += search_semantic_scholar(query, half)
-        except Exception:
-            pass
-        try:
-            results += search_arxiv(query, half)
-        except Exception:
-            pass
+    elif source == "OpenAlex":
+        return search_openalex(query, limit)
+    else:  # 전체 / 둘 다: OpenAlex + Semantic Scholar + arXiv 병합
+        buckets = []
+        for fn, n in ((search_openalex, limit),
+                      (search_semantic_scholar, max(limit // 2, 3)),
+                      (search_arxiv, 3)):
+            try:
+                buckets.append(fn(query, n))
+            except Exception:
+                pass
+        results = dedup_papers(interleave(buckets))
         if not results:
             raise Exception("검색 결과가 없어요. 다른 키워드로 시도해주세요.")
-        return results
+        return results[:limit]
 
 
 def format_paper(paper):

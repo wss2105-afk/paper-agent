@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 import streamlit.components.v1 as components
 from rag import ReferenceLibrary
-from scholar import search_papers
+from scholar import search_papers, dedup_papers, interleave
 from export import (to_word, to_markdown, to_word_redline, to_hwpx_redline,
                     diff_segments, to_stats_docx)
 import inplace_redline as ir
@@ -103,8 +103,31 @@ def get_library(db_path):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_search(query, limit, source, version=5):
+def cached_search(query, limit, source, version=6):
     return search_papers(query, limit=limit, source=source)
+
+
+def _gen_search_queries(topic, my_topic=""):
+    """연구 주제(한국어 가능)를 영어 학술 검색어 2~3개로 확장.
+    실패하면 입력한 주제 그대로 1개만 사용한다."""
+    ctx = f"\n연구 맥락: {my_topic}" if my_topic else ""
+    prompt = f"""다음 연구 주제로 학술 데이터베이스(OpenAlex, Semantic Scholar)에서 검색할 영어 검색어를 만들어주세요.{ctx}
+주제: {topic}
+
+규칙:
+- 정확히 2~3개, 각각 2~6단어의 영어 키워드 구.
+- 서로 다른 각도로: (1) 핵심 개념 직역, (2) 동의어나 학계에서 통용되는 인접 개념, (3) 방법·맥락을 결합한 구체화.
+- 존재하지 않는 약어를 만들지 마세요.
+- JSON 배열만 출력하세요. 예: ["query one", "query two"]"""
+    try:
+        resp = chat_with_claude([{"role": "user", "content": prompt}])
+        m = re.search(r"\[.*?\]", resp, re.S)
+        queries = json.loads(m.group(0)) if m else []
+        queries = [str(q).strip() for q in queries
+                   if isinstance(q, str) and str(q).strip()][:3]
+        return queries or [topic]
+    except Exception:
+        return [topic]
 
 
 def extract_pdf_text(file_path):
@@ -769,31 +792,52 @@ elif mode == "✒️ 인용 자동 삽입":
 # ── 문헌 추천 ────────────────────────────────────────────────
 elif mode == "🔍 문헌 추천":
     st.subheader("🔍 문헌 추천")
-    st.caption("연구 주제를 입력하면 Semantic Scholar / arXiv에서 관련 논문을 검색하고 Claude가 추천해드려요.")
+    st.caption("연구 주제를 입력하면 OpenAlex / Semantic Scholar / arXiv에서 관련 논문을 검색하고 Claude가 추천해드려요. 한국어 주제도 영어 검색어로 자동 확장돼요.")
 
     topic = st.text_input("연구 주제 또는 키워드 입력",
-                          placeholder="예: blended learning student motivation")
+                          placeholder="예: 블렌디드 러닝이 학습 동기에 미치는 영향 / blended learning student motivation")
     col1, col2, col3 = st.columns(3)
     with col1:
-        source = st.selectbox("검색 소스", ["Semantic Scholar", "arXiv", "둘 다"])
+        source = st.selectbox("검색 소스",
+                              ["전체 (OpenAlex+Semantic Scholar+arXiv)",
+                               "OpenAlex", "Semantic Scholar", "arXiv"],
+                              help="OpenAlex는 API 키 없이도 안정적이라 기본 포함을 추천해요.")
     with col2:
         num_results = st.slider("검색 논문 수", 5, 20, 10)
     with col3:
         my_topic = st.text_input("내 연구 주제 (선택)", placeholder="Claude 추천 기준")
 
-    ssci_priority = st.checkbox(
+    _sc1, _sc2 = st.columns(2)
+    smart_search = _sc1.checkbox(
+        "🧠 스마트 검색 (검색어 자동 확장)", value=True,
+        help="주제를 영어 학술 검색어 2~3개로 확장해 서로 다른 각도로 검색한 뒤 중복을 제거해요. 한국어 주제 입력이 가능해집니다.",
+    )
+    ssci_priority = _sc2.checkbox(
         "🏆 SSCI급 학술지 우선 추천",
         help="교육학·교육공학 분야 주요 SSCI 등재 학술지 논문을 우선 추천하고, SSCI 여부를 표시해요.",
     )
 
     if st.button("🔍 문헌 검색 및 추천", use_container_width=True, disabled=not topic):
-        with st.spinner(f"{source} 검색 중..."):
-            try:
-                papers = cached_search(topic, num_results, source, version=5)
-            except Exception as e:
-                st.error(f"❌ {e}")
-                st.info("💡 영어 키워드로 입력해보세요.\n예) blended learning, flipped classroom")
-                papers = []
+        _src = "둘 다" if source.startswith("전체") else source
+        queries = [topic]
+        if smart_search:
+            with st.spinner("검색어 확장 중..."):
+                queries = _gen_search_queries(topic, my_topic)
+            st.caption("🔎 사용한 검색어: " + " · ".join(queries))
+        per_q = num_results if len(queries) == 1 \
+            else max(num_results // len(queries) + 2, 4)
+        buckets, _search_errs = [], []
+        with st.spinner("문헌 검색 중..."):
+            for _q in queries:
+                try:
+                    buckets.append(cached_search(_q, per_q, _src, version=6))
+                except Exception as _se:
+                    _search_errs.append(str(_se))
+        papers = dedup_papers(interleave(buckets))[:num_results]
+        if not papers:
+            st.error("❌ " + (_search_errs[0] if _search_errs
+                              else "검색 결과가 없어요."))
+            st.info("💡 주제를 조금 더 일반적인 표현으로 바꾸거나, 검색 소스를 'OpenAlex'로 지정해 다시 시도해보세요.")
 
         if papers:
             # SSCI 우선 모드: 인용 수 있는 논문 먼저 정렬
