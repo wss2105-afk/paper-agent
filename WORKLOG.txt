@@ -36,6 +36,19 @@
  작업 히스토리 (최신이 위)
 ================================================================
 
+---- 2026-09-07 ----
+- [버그 수정: SPSS(.sav) 업로드 시 "파일 로드 오류: 'list' object has no
+  attribute 'get'"] (사용자 보고: 데이터 분석 설계에서 파일 로드 오류)
+  · 원인: pyreadstat의 meta.column_labels는 dict가 아니라 리스트인데
+    data_analyzer.py summarize_dataframe에서 .get(col)을 호출 → .sav 업로드
+    직후 요약 단계에서 AttributeError → 화면에는 "파일 로드 오류"로 표시.
+  · 수정: meta.column_names_to_labels(이름→라벨 dict)를 우선 사용, 없으면
+    zip(column_names, column_labels)로 dict 생성. 루프 밖에서 1회 계산.
+  · app.py 같은 계열 잠재 버그도 수정: 연구문제별 바로 실행 목록에서 스펙
+    항목이 dict가 아니면 skip (기존엔 _sp.get("설명")이 무방비였음).
+  · 검증: py_compile + 리스트형/딕트형/None meta 3케이스 summarize 테스트 통과.
+  · 커밋 6cf9035 push → Railway 자동 재배포.
+
 ---- 2026-07-28 ----
 - [★신기능★ 연구방법·통계 결과 절 작성 버튼] (사용자: "작성버튼을 추가하면,
   통계분석에 대해서는 연구방법과 통계결과를 작성하도록")
