@@ -209,16 +209,24 @@ def summarize_dataframe(df, meta=None):
     lines.append("")
     lines.append("## 변수 목록")
 
+    # pyreadstat meta: column_names_to_labels가 이름→라벨 dict (column_labels는 리스트)
+    labels_map = {}
+    if meta is not None:
+        labels_map = getattr(meta, "column_names_to_labels", None) or {}
+        if not labels_map:
+            names = getattr(meta, "column_names", None) or []
+            lbls = getattr(meta, "column_labels", None) or []
+            labels_map = dict(zip(names, lbls))
+
     for col in df.columns:
         dtype = df[col].dtype
         missing = df[col].isnull().sum()
         missing_pct = missing / len(df) * 100
 
         label = ""
-        if meta and hasattr(meta, "column_labels") and meta.column_labels:
-            label_val = meta.column_labels.get(col, "")
-            if label_val:
-                label = f" [{label_val}]"
+        label_val = labels_map.get(col)
+        if label_val:
+            label = f" [{label_val}]"
 
         if pd.api.types.is_numeric_dtype(dtype):
             mean = df[col].mean()

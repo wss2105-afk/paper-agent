@@ -1230,12 +1230,14 @@ elif mode == "📊 데이터 분석 설계":
                     st.caption("연구문제마다 제안된 분석 방법을 클릭 한 번으로 같은 데이터에 바로 실행해요. 결과는 아래와 '저장된 분석 결과'에 나타납니다.")
                     _last_rq = None
                     for _pi, _sp in enumerate(_specs[:6]):
-                        _rq = str(_sp.get("연구문제") or "").strip() if isinstance(_sp, dict) else ""
+                        if not isinstance(_sp, dict):
+                            continue
+                        _rq = str(_sp.get("연구문제") or "").strip()
                         if _rq and _rq != _last_rq:
                             st.markdown(f"**❓ {_rq}**")
                             _last_rq = _rq
                         _plabel = str(_sp.get("설명") or _sp.get("method", "분석"))
-                        _pfn = _proposal_fn(_sp) if isinstance(_sp, dict) else None
+                        _pfn = _proposal_fn(_sp)
                         if _pfn is None:
                             st.caption(f"▫️ {_plabel} — 변수명 불일치로 실행 불가 (아래에서 직접 변수를 선택해 실행하세요)")
                             continue
