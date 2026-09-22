@@ -51,6 +51,26 @@ def save_projects(data_dir, projects):
         json.dumps(projects, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_last_project(data_dir):
+    """마지막으로 사용한 프로젝트 id (없으면 None). 새 세션·재배포 후에도 같은 프로젝트로 복귀시키는 용도."""
+    f = Path(data_dir) / "last_project.json"
+    if f.exists():
+        try:
+            return str(json.loads(f.read_text(encoding="utf-8")).get("id"))
+        except Exception:
+            return None
+    return None
+
+
+def save_last_project(data_dir, pid):
+    try:
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        (Path(data_dir) / "last_project.json").write_text(
+            json.dumps({"id": str(pid)}), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def project_dir(data_dir, pid):
     d = Path(data_dir) / "projects" / str(pid)
     d.mkdir(parents=True, exist_ok=True)

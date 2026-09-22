@@ -36,6 +36,7 @@ from projects import (
     load_projects, save_projects, project_dir, migrate_legacy,
     load_analyses, save_analysis, delete_analysis, tables_from_record,
     update_analysis_interp, save_design, load_design, MAX_PROJECTS,
+    load_last_project, save_last_project,
 )
 
 load_dotenv()
@@ -56,8 +57,12 @@ try:
 except Exception:
     pass  # 레거시 이전 실패가 앱 구동을 막지 않도록 (다음 실행에 재시도)
 PROJECTS = load_projects(DATA_DIR)
-if st.session_state.get("project_id") not in [p["id"] for p in PROJECTS]:
-    st.session_state["project_id"] = PROJECTS[0]["id"]
+_proj_ids = [p["id"] for p in PROJECTS]
+if st.session_state.get("project_id") not in _proj_ids:
+    # 새 세션(새로고침·재접속·재배포 후)은 마지막으로 쓰던 프로젝트로 복귀.
+    # 예전엔 무조건 1번으로 열려서, 3번에서 학습한 라이브러리가 "사라진" 것처럼 보였음.
+    _last = load_last_project(DATA_DIR)
+    st.session_state["project_id"] = _last if _last in _proj_ids else PROJECTS[0]["id"]
 
 PROJ_DIR       = project_dir(DATA_DIR, st.session_state["project_id"])
 PDF_DIR        = PROJ_DIR / "pdfs"
@@ -600,12 +605,7 @@ def render_library_manager():
     """참고문헌 라이브러리 관리 UI (PDF 업로드 + 학습 + 목록 + 초기화).
     단락 작성/PDF 분석 통합 모드 안에서 사용."""
     saved_pdfs = list(PDF_DIR.glob("*.pdf"))
-    if library.is_ready():
-        st.success(f"✅ {library.count_papers()}개 논문 학습 완료")
-    elif saved_pdfs:
-        st.warning(f"⚠️ {len(saved_pdfs)}개 파일 있음 — 아래 '문헌 학습 시작'을 눌러주세요")
-    else:
-        st.info("논문 PDF를 업로드하면 단락 작성·분석에 활용해요. (여러 개 가능)")
+    _status = st.empty()  # 상태 표시 자리 (업로드 처리 후 최종 상태로 채움)
 
     uploaded_files = st.file_uploader(
         "논문 PDF 업로드 (여러 개 가능)", type="pdf",
@@ -621,9 +621,38 @@ def render_library_manager():
             else:
                 uf.seek(0)
         if new_files:
-            st.info(f"{len(new_files)}개 파일 저장됨")
+            st.info(f"{len(new_files)}개 파일 저장됨 — 자동으로 학습을 시작해요.")
 
     saved_pdfs = list(PDF_DIR.glob("*.pdf"))
+
+    # 폴더와 색인이 다르면(새 파일·삭제) 백그라운드로 자동 학습 — 버튼을 안 눌러도 됨.
+    # 스레드에서 돌아가므로 화면 이동·새로고침에도 중단되지 않고, 끝나면 디스크에 저장돼 영구 유지.
+    if (saved_pdfs or library.is_ready()) and not library.indexing and library.needs_reindex(PDF_DIR):
+        threading.Thread(target=library.index_folder, args=(str(PDF_DIR),), daemon=True).start()
+        time.sleep(0.3)  # 스레드가 indexing 플래그를 올릴 시간
+
+    if library.indexing:
+        _prog = library.progress
+        if _prog:
+            _done, _total, _name = _prog
+            _status.info(f"📚 문헌 학습 중... {_done}/{_total} — {_name[:30]}")
+            st.progress(min(_done / max(_total, 1), 1.0))
+        else:
+            _status.info("📚 문헌 학습 준비 중...")
+        time.sleep(1.5)
+        st.rerun()  # 진행 상황 갱신 (스레드는 계속 돌아감)
+    elif library.is_ready():
+        _status.success(f"✅ {library.count_papers()}개 논문 학습 완료 — 다시 학습할 필요 없이 계속 사용돼요.")
+        _lr = library.last_result
+        if _lr and _lr[1]:
+            with st.expander(f"⚠️ 마지막 학습에서 오류 {len(_lr[1])}건 (해당 파일만 제외됨)"):
+                for e in _lr[1]:
+                    st.text(e)
+    elif saved_pdfs:
+        _status.warning(f"⚠️ {len(saved_pdfs)}개 파일에서 텍스트를 추출하지 못했어요. 스캔 이미지 PDF는 지원되지 않아요.")
+    else:
+        _status.info("논문 PDF를 업로드하면 단락 작성·분석에 활용해요. (여러 개 가능)")
+
     if saved_pdfs:
         with st.expander(f"저장된 논문 {len(saved_pdfs)}개 보기 / 삭제"):
             for p in saved_pdfs:
@@ -633,24 +662,11 @@ def render_library_manager():
                     p.unlink()
                     st.rerun()
         col_a, col_b = st.columns([2, 1])
-        if col_a.button("🔄 문헌 학습 시작", use_container_width=True,
-                        help="업로드한 PDF를 색인해 단락 작성(RAG)에 사용할 수 있게 해요."):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def on_progress(current, total, name):
-                progress_bar.progress(current / total)
-                status_text.text(f"처리 중: {name[:30]}...")
-
-            with st.spinner("PDF 분석 중..."):
-                indexed, errors = library.index_folder(str(PDF_DIR), on_progress)
-            progress_bar.empty()
-            status_text.empty()
-            st.success(f"✅ {len(indexed)}개 논문 학습 완료!")
-            if errors:
-                with st.expander(f"⚠️ 오류 {len(errors)}건"):
-                    for e in errors:
-                        st.text(e)
+        if col_a.button("🔄 다시 학습", use_container_width=True, disabled=library.indexing,
+                        help="새 파일을 올리면 자동으로 학습되므로 보통 누를 필요가 없어요. "
+                             "결과가 이상할 때 전체를 다시 색인하는 용도입니다."):
+            threading.Thread(target=library.index_folder, args=(str(PDF_DIR),), daemon=True).start()
+            time.sleep(0.3)
             st.rerun()
         if col_b.button("🗑️ 전체 초기화", use_container_width=True, type="secondary"):
             st.session_state.confirm_reset = True
@@ -732,6 +748,7 @@ with st.sidebar:
             use_container_width=True, help=p["name"],
         ) and not is_cur:
             st.session_state["project_id"] = p["id"]
+            save_last_project(DATA_DIR, p["id"])  # 다음 세션도 이 프로젝트로 열리게
             st.session_state.pop("stats_run", None)  # 이전 프로젝트 결과 잔상 제거
             st.session_state.pop("design_result", None)  # 분석 설계도 프로젝트별
             st.session_state.pop("design_specs", None)
@@ -739,7 +756,9 @@ with st.sidebar:
             st.session_state.pop("ms_draft", None)  # 내 원고 단락도 프로젝트별
             st.rerun()
     _cur_proj = next(p for p in PROJECTS if p["id"] == st.session_state["project_id"])
-    st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**")
+    _lib_note = (f" · 📚 {library.count_papers()}편 학습됨" if library.is_ready()
+                 else (" · 📚 학습 중..." if library.indexing else ""))
+    st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**{_lib_note}")
     with st.expander("✏️ 이름 바꾸기 / 프로젝트 추가"):
         _new_name = st.text_input("현재 프로젝트 이름", value=_cur_proj["name"],
                                   key=f"pname_{_cur_proj['id']}", max_chars=20)
@@ -754,6 +773,7 @@ with st.sidebar:
                 PROJECTS.append({"id": _nid, "name": f"프로젝트 {_nid}"})
                 save_projects(DATA_DIR, PROJECTS)
                 st.session_state["project_id"] = _nid
+                save_last_project(DATA_DIR, _nid)
                 st.rerun()
         else:
             c2.caption(f"최대 {MAX_PROJECTS}개")

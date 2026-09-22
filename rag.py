@@ -39,6 +39,8 @@ class ReferenceLibrary:
         self.manifest = set()
         self._lock = threading.Lock()  # 동시 재색인 방지 (여러 세션이 동시에 열어도 1회만)
         self.indexing = False
+        self.progress = None            # 색인 중 (처리한 수, 전체 수, 현재 파일명) — 화면 폴링용
+        self.last_result = None         # 마지막 색인 결과 (indexed, errors)
         self._load()
 
     def _load(self):
@@ -100,6 +102,7 @@ class ReferenceLibrary:
                 except Exception as e:
                     errors.append(f"{pdf_path.name}: {e}")
 
+                self.progress = (i + 1, len(pdf_files), pdf_path.name)
                 if progress_callback:
                     progress_callback(i + 1, len(pdf_files), pdf_path.name)
 
@@ -110,9 +113,11 @@ class ReferenceLibrary:
             self.documents, self.metadata, self._doc_tokens, self.bm25 = documents, metadata, doc_tokens, bm25
             self.manifest = {p.name for p in pdf_files}
             self._save()
+            self.last_result = (indexed, errors)
             return indexed, errors
         finally:
             self.indexing = False
+            self.progress = None
             self._lock.release()
 
     def _extract_text(self, pdf_path):
