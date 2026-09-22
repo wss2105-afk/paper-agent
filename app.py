@@ -19,7 +19,7 @@ from export import (to_word, to_markdown, to_word_redline, to_hwpx_redline,
                     diff_segments, to_stats_docx)
 import inplace_redline as ir
 import journal_format as jf
-from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats, load_codebook_text
+from data_analyzer import load_file, summarize_dataframe, summarize_interview, get_preview, get_basic_stats, load_codebook_text, load_document_text
 from stats_runner import (
     run_ttest_ind, run_ttest_rel, run_anova, run_correlation,
     run_chisquare, run_cronbach, run_regression, run_hlm,
@@ -84,6 +84,7 @@ SYSTEM_PROMPT = """당신은 교육공학 분야의 학술 논문 작성을 전�
 3. 글쓰기 보조: 문장 다듬기, 학술적 표현으로 변환
 4. 참고문헌 형식: APA, MLA 등 인용 형식 변환 및 생성
 5. 단락 작성: 제공된 참고문헌 내용을 기반으로 학술적 단락 작성
+6. 원고 발전: 사용자가 작업 중인 원고(초안·메모)를 논문에 쓸 수 있는 학술 단락으로 재구성
 
 답변 원칙:
 - 항상 한국어로 답변
@@ -236,6 +237,91 @@ def write_paragraph_with_refs(topic, style, results, style_profile=None, languag
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text
+
+
+def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, results=None,
+                                     heads=None, style_profile=None, language="한국어",
+                                     length="표준 (한 단락)"):
+    """사용자가 작업 중인 원고(초안·메모·정리 노트)에서 논문에 쓸 만한 단락을 작성.
+    results(라이브러리 검색 결과)가 있으면 그 안의 자료만 인용하고, 없으면 [인용 필요]로 표시.
+    반환: (본문, 잘림 여부)"""
+    style_section = build_style_instruction(style_profile) if style_profile else ""
+    length_line = _PARAGRAPH_LENGTHS.get(length, _PARAGRAPH_LENGTHS["표준 (한 단락)"])
+    lang_line = ("반드시 영어(English)로 작성하세요. 학술 논문에 적합한 영어 문체를 사용하세요."
+                 if language == "English" else "반드시 한국어로 작성하세요.")
+    if style in _PARAGRAPH_GUIDES:
+        type_line = f"{style} — {_PARAGRAPH_GUIDES[style]}"
+    else:
+        type_line = ("자동 — 각 단락이 논문의 어느 절(서론/이론적 배경/선행연구 검토/연구방법/논의/결론)에 "
+                     "들어갈지 원고 내용에 맞게 스스로 정하고, 그 절의 역할에 맞는 흐름으로 전개하세요.")
+    if instruction:
+        target_line = (f"작성 요청: {instruction}\n"
+                       "원고 중 이 요청과 관련된 내용을 중심으로 작성하세요. 관련 내용이 원고에 부족하면 그 사실을 먼저 밝히세요.")
+    else:
+        target_line = ("작성 요청: 별도 지정 없음 — 원고 전체를 읽고, 논문 단락으로 발전시킬 가치가 가장 큰 부분을 "
+                       f"{n_paras}곳 골라 작성하세요.")
+
+    results = results or []
+    heads = heads or {}
+    if results:
+        ref_texts = "\n\n".join(f"[출처 {i+1}: {r['source']}]\n{r['text']}" for i, r in enumerate(results))
+        source_list = "\n".join(f"- {r['source']}" for r in results)
+        bib_section = "\n\n".join(
+            f"[출처 {i+1} 첫머리: {r['source']}]\n{heads[r['source']]}"
+            for i, r in enumerate(results) if heads.get(r["source"]))
+        ref_block = f"""
+[참고문헌 내용 — 내 라이브러리에서 검색된 자료]
+{ref_texts}
+"""
+        if bib_section:
+            ref_block += f"""
+[논문 첫머리 — 서지 정보 확인용]
+{bib_section}
+"""
+        ref_block += f"""
+[사용 가능한 출처]
+{source_list}
+"""
+        cite_rule = ("선행연구 인용은 위 [참고문헌 내용]에 실제로 있는 자료만 사용하세요. 저자·연도가 [논문 첫머리]에서 "
+                     "확인되면 APA식 (저자, 연도)로, 확인되지 않으면 출처 이름 그대로 쓰세요. 원고의 주장을 뒷받침하는 "
+                     "자료가 없으면 인용을 만들지 말고 그 문장 뒤에 [인용 필요]라고 표시하세요. "
+                     "원고에 이미 있는 (저자, 연도) 인용은 그대로 살리세요.")
+        ref_list_rule = ("\n6. 글 맨 아래에 참고문헌 항목(영어면 \"References:\", 한국어면 \"**참고문헌:**\")으로 "
+                         "실제 인용한 라이브러리 자료만 나열하세요. 저자·연도·제목이 확인되면 APA 형식으로, 아니면 출처 이름 그대로.")
+    else:
+        ref_block = ""
+        cite_rule = ("참고문헌 자료가 제공되지 않았습니다. 선행연구 인용이 필요한 주장 뒤에는 [인용 필요]라고 표시하고, "
+                     "저자·연도·문헌을 절대 지어내지 마세요. 원고에 이미 있는 (저자, 연도) 인용은 그대로 살리세요.")
+        ref_list_rule = ""
+
+    prompt = f"""아래 [내 원고]는 제가 논문을 위해 작업 중인 문서(초안·메모·정리 노트 등)입니다. 이 원고의 내용을 바탕으로 학술 논문에 바로 쓸 수 있는 단락 {n_paras}개를 작성해주세요.
+
+작성 언어: {lang_line}
+단락 유형: {type_line}
+단락당 분량: {length_line}
+{target_line}
+{style_section}
+[내 원고]
+{manuscript}
+{ref_block}
+작성 지침:
+1. 원고에 실제로 있는 내용·주장·자료만 사용하세요. 원고에 없는 연구 결과·수치·사실을 보태지 마세요. 원고의 표현이 메모 수준이면 학술적 문장으로 다듬어 논리적으로 전개하세요.
+2. 원고에서 서로 관련된 내용은 하나의 단락으로 묶고, 주장→근거→의미의 흐름이 드러나게 쓰세요. 원고 문장을 그대로 복사하지 말고 재구성하세요. 원고의 숫자·기호·용어 표기는 바꾸지 마세요.
+3. {cite_rule}
+4. 단락은 서로 내용이 겹치지 않게 하고, 각각 논문의 어느 절에 들어갈지 명확히 하세요.
+5. 출력 형식 — 단락마다 아래 형식을 지키세요:
+   ### N. [논문 내 위치] 소제목
+   (단락 본문)
+   > 📌 원고 근거: 원고의 어느 부분을 바탕으로 했는지 한 줄
+   > 🔧 보완 제안: 논문으로 완성하려면 더 필요한 것(근거 자료·수치·선행연구 등) 한두 줄 — 없으면 생략{ref_list_rule}
+"""
+    response = _call_claude(
+        model="claude-sonnet-4-6",
+        max_tokens=8192,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text, response.stop_reason == "max_tokens"
 
 
 def insert_citations(draft_text, search_results, style_profile=None):
@@ -494,6 +580,7 @@ with st.sidebar:
             st.session_state.pop("design_result", None)  # 분석 설계도 프로젝트별
             st.session_state.pop("design_specs", None)
             st.session_state.pop("mr_draft", None)  # 연구방법·결과 초안도 프로젝트별
+            st.session_state.pop("ms_draft", None)  # 내 원고 단락도 프로젝트별
             st.rerun()
     _cur_proj = next(p for p in PROJECTS if p["id"] == st.session_state["project_id"])
     st.caption(f"현재: **{_cur_proj['id']}. {_cur_proj['name']}**")
@@ -601,7 +688,8 @@ if mode == "📚 단락 작성 · 논문 분석":
         st.markdown("##### 📁 참고문헌 라이브러리")
         render_library_manager()
 
-    tab_write, tab_analyze = st.tabs(["✍️ 단락 작성", "📄 논문 PDF 분석"])
+    tab_write, tab_manuscript, tab_analyze = st.tabs(
+        ["✍️ 단락 작성", "📝 내 원고로 단락 작성", "📄 논문 PDF 분석"])
 
     with tab_write:
         if not library.is_ready():
@@ -664,6 +752,124 @@ if mode == "📚 단락 작성 · 논문 분석":
                     st.markdown("### 작성된 단락")
                     st.markdown(paragraph)
                     export_buttons(paragraph, topic, "rag")
+
+    with tab_manuscript:
+        st.caption("작업 중인 원고(초안·메모·정리 노트)를 올리면, 그 내용을 바탕으로 논문에 쓸 만한 단락을 골라 "
+                   "학술 문장으로 작성해드려요. 원고에 없는 내용은 보태지 않고, 인용이 필요한 곳은 표시해요.")
+        MS_DRAFT_FILE = PROJ_DIR / "manuscript_paragraphs.json"
+        MS_MAX_CHARS = 40000
+
+        ms_file = st.file_uploader(
+            "내 원고 업로드 (Word .docx / 한글 .hwp·.hwpx / PDF / .txt)",
+            type=["docx", "hwp", "hwpx", "pdf", "txt"], key="ms_upload",
+            help="Word 파일은 본문 문단과 표 내용을 모두 읽어요.",
+        )
+        ms_text = None
+        if ms_file:
+            try:
+                ms_text = load_document_text(ms_file)
+            except Exception as e:
+                st.error(f"❌ 파일을 읽지 못했어요: {e}")
+            if ms_text is not None and not ms_text.strip():
+                st.warning("파일에서 텍스트를 찾지 못했어요. (스캔 이미지 문서는 지원되지 않아요)")
+                ms_text = None
+
+        if ms_text:
+            ms_text = ms_text.strip()
+            if len(ms_text) > MS_MAX_CHARS:
+                st.warning(f"원고가 길어 앞부분 {MS_MAX_CHARS:,}자만 사용해요 (전체 {len(ms_text):,}자). "
+                           "특정 부분을 쓰려면 그 부분만 담은 파일로 올려주세요.")
+                ms_text = ms_text[:MS_MAX_CHARS]
+            st.success(f"원고 로드 완료 — {ms_file.name} ({len(ms_text):,}자)")
+            with st.expander("원고 미리보기", expanded=False):
+                st.text(ms_text[:3000] + (" ..." if len(ms_text) > 3000 else ""))
+
+            ms_instruction = st.text_input(
+                "어떤 단락을 쓸까요? (선택)",
+                placeholder="예: 서론의 연구 필요성 부분 / 비워두면 원고에서 쓸 만한 부분을 자동으로 골라요",
+                key="ms_instruction",
+            )
+            _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+            with _mc1:
+                ms_style = st.selectbox("단락 유형",
+                                        ["자동 (원고에 맞게)", "이론적 배경", "서론", "선행연구 검토", "논의", "결론"],
+                                        key="ms_style")
+            with _mc2:
+                ms_lang = st.selectbox("작성 언어", ["한국어", "English"], key="ms_lang")
+            with _mc3:
+                ms_length = st.selectbox("단락당 분량", ["표준 (한 단락)", "상세 (2~3단락)"], key="ms_length")
+            with _mc4:
+                ms_count = st.slider("작성할 단락 수", 1, 5, 3, key="ms_count")
+
+            ms_profile = load_style_profile(str(STYLE_PROFILE))
+            _mo1, _mo2 = st.columns(2)
+            ms_use_style = _mo1.checkbox(
+                "🖊️ 내 스타일로 작성", value=bool(ms_profile), disabled=not ms_profile, key="ms_use_style",
+                help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not ms_profile else "내 문체·관점을 반영해 작성합니다.",
+            )
+            _lib_ready = library.is_ready()
+            ms_use_lib = _mo2.checkbox(
+                "📁 라이브러리 참고문헌 인용 반영", value=_lib_ready, disabled=not _lib_ready, key="ms_use_lib",
+                help="위 참고문헌 라이브러리에서 관련 논문을 찾아 (저자, 연도) 인용을 넣어요." if _lib_ready
+                else "위에서 PDF를 업로드하고 '문헌 학습 시작'을 누르면 사용 가능해요.",
+            )
+
+            if st.button("📝 원고로 단락 작성", use_container_width=True, key="ms_run"):
+                ms_results, ms_heads = [], {}
+                if ms_use_lib:
+                    with st.spinner("라이브러리에서 관련 문헌 검색 중..."):
+                        _q = ms_instruction.strip() or ms_text[:800]
+                        try:
+                            ms_results = library.search(_q, top_k=5, per_source=2)
+                        except Exception:
+                            ms_results = []
+                    if ms_results:
+                        ms_heads = {r["source"]: library.get_head(r["source"]) for r in ms_results}
+                        with st.expander(f"🔍 인용에 사용할 참고문헌 {len(ms_results)}개", expanded=False):
+                            for r in ms_results:
+                                st.markdown(f"**{r['source']}** (관련도: {r['score']:.2f})")
+                                st.caption(r["text"][:200] + "...")
+                    else:
+                        st.caption("라이브러리에서 관련 문헌을 찾지 못해 인용 없이 작성해요 (인용 필요한 곳은 표시).")
+                with st.spinner("Claude가 원고를 읽고 단락을 작성 중..."):
+                    _ms_out, _ms_trunc = write_paragraphs_from_manuscript(
+                        ms_text, ms_instruction.strip(), ms_style, ms_count,
+                        results=ms_results, heads=ms_heads,
+                        style_profile=ms_profile if ms_use_style else None,
+                        language=ms_lang, length=ms_length,
+                    )
+                if _ms_trunc:
+                    st.warning("⚠️ 출력이 길이 한도에 걸려 끝이 잘렸을 수 있어요. 단락 수나 분량을 줄여 다시 실행해보세요.")
+                _ms_rec = {
+                    "name": ms_file.name, "instruction": ms_instruction.strip(),
+                    "result": _ms_out, "time": time.strftime("%Y-%m-%d %H:%M"),
+                }
+                try:
+                    MS_DRAFT_FILE.write_text(json.dumps(_ms_rec, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
+                st.session_state["ms_draft"] = _ms_rec
+
+        _ms = st.session_state.get("ms_draft")
+        if not _ms and MS_DRAFT_FILE.exists():
+            try:
+                _ms = json.loads(MS_DRAFT_FILE.read_text(encoding="utf-8"))
+                if not isinstance(_ms, dict) or not _ms.get("result"):
+                    _ms = None
+            except Exception:
+                _ms = None
+        if _ms:
+            st.markdown(f"### 작성된 단락 — {_ms.get('name', '')}")
+            st.caption(f"{_ms.get('time', '')}" + (f" · 요청: {_ms['instruction']}" if _ms.get("instruction") else ""))
+            st.markdown(_ms["result"])
+            export_buttons(_ms["result"], _ms.get("instruction") or "내원고", "ms")
+            if st.button("🗑️ 결과 지우기", key="ms_del"):
+                st.session_state.pop("ms_draft", None)
+                try:
+                    MS_DRAFT_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                st.rerun()
 
     with tab_analyze:
         st.caption("업로드한 논문을 골라 요약·분석해요. (위 라이브러리에 올린 PDF를 사용하거나 새로 올릴 수 있어요)")

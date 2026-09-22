@@ -124,9 +124,10 @@ def extract_hwp_text(file_like):
         ole.close()
 
 
-def load_codebook_text(uploaded_file):
-    """코딩북(변수 설명서) 파일에서 텍스트 추출.
-    Excel/CSV는 표 그대로, Word는 문단+표, 한글/PDF/텍스트도 지원."""
+def load_document_text(uploaded_file):
+    """문서 파일에서 텍스트 추출 (범용).
+    Excel/CSV는 표 그대로, Word는 문단+표, 한글(.hwp/.hwpx)/PDF/텍스트도 지원.
+    코딩북·작업 원고 등 '문서 내용을 통째로 읽어야 하는' 곳에서 공용으로 사용."""
     name = uploaded_file.name.lower()
     if name.endswith((".xlsx", ".xls")):
         df = pd.read_excel(uploaded_file)
@@ -156,6 +157,11 @@ def load_codebook_text(uploaded_file):
                     text += t + "\n"
         return text
     return uploaded_file.read().decode("utf-8", errors="ignore")
+
+
+def load_codebook_text(uploaded_file):
+    """코딩북(변수 설명서) 파일에서 텍스트 추출 — load_document_text와 동일 동작."""
+    return load_document_text(uploaded_file)
 
 
 def load_file(uploaded_file):
