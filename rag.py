@@ -1,6 +1,7 @@
 import json
 import pickle
 import re
+import threading
 from pathlib import Path
 
 import pdfplumber
@@ -30,10 +31,14 @@ class ReferenceLibrary:
         self.db_path.mkdir(exist_ok=True)
         self.index_file = self.db_path / "index.pkl"
         self.metadata_file = self.db_path / "metadata.json"
+        self.manifest_file = self.db_path / "manifest.json"  # 색인을 '시도한' 파일 목록
         self.documents = []
         self.metadata = []
         self._doc_tokens = []
         self.bm25 = None
+        self.manifest = set()
+        self._lock = threading.Lock()  # 동시 재색인 방지 (여러 세션이 동시에 열어도 1회만)
+        self.indexing = False
         self._load()
 
     def _load(self):
@@ -48,47 +53,67 @@ class ReferenceLibrary:
                     self.bm25 = BM25Okapi(self._doc_tokens)
             with open(self.metadata_file, "r", encoding="utf-8") as f:
                 self.metadata = json.load(f)
+        if self.manifest_file.exists():
+            try:
+                with open(self.manifest_file, "r", encoding="utf-8") as f:
+                    self.manifest = set(json.load(f).get("files", []))
+            except Exception:
+                self.manifest = self.indexed_filenames()
+        else:
+            # 구버전 색인(manifest 없음) → 성공한 파일 목록으로 대체
+            self.manifest = self.indexed_filenames()
 
     def _save(self):
         with open(self.index_file, "wb") as f:
             pickle.dump({"documents": self.documents}, f)
         with open(self.metadata_file, "w", encoding="utf-8") as f:
             json.dump(self.metadata, f, ensure_ascii=False, indent=2)
+        with open(self.manifest_file, "w", encoding="utf-8") as f:
+            json.dump({"files": sorted(self.manifest)}, f, ensure_ascii=False, indent=2)
 
     def index_folder(self, folder_path, progress_callback=None):
-        self.documents = []
-        self.metadata = []
-        pdf_files = list(Path(folder_path).glob("**/*.pdf"))
-        indexed, errors = [], []
+        """폴더의 PDF를 전부 다시 색인. 진행 중인 색인이 있으면 새로 시작하지 않는다.
+        결과는 로컬 변수에 모아 마지막에 한 번에 교체 → 색인 도중에도 search()가 안전."""
+        if not self._lock.acquire(blocking=False):
+            return [], ["이미 색인이 진행 중이에요"]
+        self.indexing = True
+        try:
+            pdf_files = list(Path(folder_path).glob("**/*.pdf"))
+            documents, metadata, indexed, errors = [], [], [], []
 
-        for i, pdf_path in enumerate(pdf_files):
-            try:
-                text = self._extract_text(pdf_path)
-                if not text.strip():
-                    errors.append(f"{pdf_path.name}: 텍스트 추출 실패")
-                    continue
-                chunks = self._chunk(text)
-                for j, chunk in enumerate(chunks):
-                    self.documents.append(chunk)
-                    self.metadata.append({
-                        "source": pdf_path.stem,
-                        "filename": pdf_path.name,
-                        "path": str(pdf_path),
-                        "chunk_id": j,
-                    })
-                indexed.append(pdf_path.stem)
-            except Exception as e:
-                errors.append(f"{pdf_path.name}: {e}")
+            for i, pdf_path in enumerate(pdf_files):
+                try:
+                    text = self._extract_text(pdf_path)
+                    if not text.strip():
+                        errors.append(f"{pdf_path.name}: 텍스트 추출 실패")
+                        continue
+                    chunks = self._chunk(text)
+                    for j, chunk in enumerate(chunks):
+                        documents.append(chunk)
+                        metadata.append({
+                            "source": pdf_path.stem,
+                            "filename": pdf_path.name,
+                            "path": str(pdf_path),
+                            "chunk_id": j,
+                        })
+                    indexed.append(pdf_path.stem)
+                except Exception as e:
+                    errors.append(f"{pdf_path.name}: {e}")
 
-            if progress_callback:
-                progress_callback(i + 1, len(pdf_files), pdf_path.name)
+                if progress_callback:
+                    progress_callback(i + 1, len(pdf_files), pdf_path.name)
 
-        # 문서가 없으면 bm25=None으로 비우고도 저장 → 파일을 다 지운 뒤 옛 색인이 남지 않게
-        self._doc_tokens = [tokenize(d) for d in self.documents]
-        self.bm25 = BM25Okapi(self._doc_tokens) if self.documents else None
-        self._save()
-
-        return indexed, errors
+            doc_tokens = [tokenize(d) for d in documents]
+            # 문서가 없으면 bm25=None으로 비우고도 저장 → 파일을 다 지운 뒤 옛 색인이 남지 않게
+            bm25 = BM25Okapi(doc_tokens) if documents else None
+            # 실패한 파일도 manifest에 넣어야 needs_reindex()가 매번 True로 남지 않음
+            self.documents, self.metadata, self._doc_tokens, self.bm25 = documents, metadata, doc_tokens, bm25
+            self.manifest = {p.name for p in pdf_files}
+            self._save()
+            return indexed, errors
+        finally:
+            self.indexing = False
+            self._lock.release()
 
     def _extract_text(self, pdf_path):
         text = ""
@@ -169,9 +194,12 @@ class ReferenceLibrary:
         return {m["filename"] for m in self.metadata}
 
     def needs_reindex(self, folder_path):
-        """폴더의 PDF 목록과 색인된 파일 목록이 다르면 True (추가·삭제 감지)"""
+        """폴더의 PDF 목록과 마지막에 색인을 시도한 파일 목록이 다르면 True (추가·삭제 감지).
+        색인 진행 중이면 False (중복 시작 방지)."""
+        if self.indexing:
+            return False
         current = {p.name for p in Path(folder_path).glob("**/*.pdf")}
-        return current != self.indexed_filenames()
+        return current != self.manifest
 
     def count_papers(self):
         sources = {m["source"] for m in self.metadata}

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -326,12 +327,14 @@ def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, re
 
 
 def ensure_my_papers_indexed(lib, folder):
-    """내 논문 폴더와 색인이 다르면(추가·삭제) 자동 재색인. 변경 없으면 아무 것도 안 함.
-    반환: 재색인했으면 True"""
+    """내 논문 폴더와 색인이 다르면(추가·삭제) 백그라운드 스레드로 재색인을 시작한다.
+    변경이 없거나 이미 진행 중이면 아무 것도 안 함. 반환: 시작했으면 True.
+    ※ PDF 텍스트 추출은 수 분 걸릴 수 있어 화면 렌더를 막지 않도록 스레드에서 실행.
+       (예전에 렌더 안에서 동기로 돌렸을 때 새로고침마다 색인이 겹쳐 서버가 멈췼음)"""
     try:
-        if not lib.needs_reindex(folder):
+        if lib.indexing or not lib.needs_reindex(folder):
             return False
-        lib.index_folder(str(folder))
+        threading.Thread(target=lib.index_folder, args=(str(folder),), daemon=True).start()
         return True
     except Exception:
         return False
@@ -712,14 +715,16 @@ with st.sidebar:
         st.info(f"{len(my_papers_upload)}개 저장됨")
 
     my_pdfs = list(MY_PAPERS_DIR.glob("*.pdf"))
+    # 자유 질문용 내 논문 검색 색인 — 폴더와 색인이 다르면(추가·삭제) 백그라운드로 갱신
+    if my_library.indexing:
+        st.caption("🔎 내 논문 검색 색인을 만들고 있어요... 잠시 후 새로고침하면 자유 질문에서 검색돼요.")
+    elif (my_pdfs or my_library.is_ready()) and my_library.needs_reindex(MY_PAPERS_DIR):
+        ensure_my_papers_indexed(my_library, MY_PAPERS_DIR)
+        st.caption("🔎 내 논문 검색 색인을 백그라운드에서 만들기 시작했어요. (잠시 후 새로고침)")
+    elif my_pdfs and my_library.is_ready():
+        st.caption(f"🔎 자유 질문에서 내 논문 {my_library.count_papers()}편을 검색해 답해요.")
     if my_pdfs:
         st.caption(f"업로드된 내 논문: {len(my_pdfs)}개")
-        # 자유 질문에서 내 논문을 검색할 수 있게 색인 (폴더와 색인이 다를 때만 실행)
-        if my_library.needs_reindex(MY_PAPERS_DIR):
-            with st.spinner("내 논문 검색 색인 만드는 중..."):
-                ensure_my_papers_indexed(my_library, MY_PAPERS_DIR)
-        if my_library.is_ready():
-            st.caption(f"🔎 자유 질문에서 내 논문 {my_library.count_papers()}편을 검색해 답해요.")
         if st.button("🔍 스타일 분석 시작", use_container_width=True):
             with st.spinner("논문 읽는 중..."):
                 papers = load_my_papers(str(MY_PAPERS_DIR))
@@ -2413,8 +2418,9 @@ if mode in ["💬 자유 질문", "🏗️ 논문 구조 설계"]:
     # 자유 질문: 내 논문 + 참고문헌 라이브러리를 검색해 근거로 넘긴다 (끄면 일반 대화)
     use_docs = False
     if mode == "💬 자유 질문":
-        if MY_PAPERS_DIR.exists() and my_library.needs_reindex(MY_PAPERS_DIR):
-            ensure_my_papers_indexed(my_library, MY_PAPERS_DIR)
+        # (색인 갱신은 사이드바에서 백그라운드로 처리 — 여기서는 상태만 표시)
+        if my_library.indexing:
+            st.caption("🔎 내 논문 검색 색인을 만들고 있어요. 끝나면 새로고침 후 내 논문에 대해 질문할 수 있어요.")
         _n_my = my_library.count_papers() if my_library.is_ready() else 0
         _n_lib = library.count_papers() if library.is_ready() else 0
         _has_docs = (_n_my + _n_lib) > 0
