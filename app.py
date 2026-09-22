@@ -62,6 +62,7 @@ PROJ_DIR       = project_dir(DATA_DIR, st.session_state["project_id"])
 PDF_DIR        = PROJ_DIR / "pdfs"
 DB_DIR         = PROJ_DIR / "reference_db"
 MY_PAPERS_DIR  = Path(DATA_DIR) / "my_papers"
+MY_PAPERS_DB   = Path(DATA_DIR) / "my_papers_db"   # 내 논문 검색 색인(전역, 자유 질문용)
 STYLE_PROFILE  = Path(DATA_DIR) / "style_profile.json"
 
 for d in [PDF_DIR, DB_DIR, MY_PAPERS_DIR]:
@@ -324,6 +325,67 @@ def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, re
     return response.content[0].text, response.stop_reason == "max_tokens"
 
 
+def ensure_my_papers_indexed(lib, folder):
+    """내 논문 폴더와 색인이 다르면(추가·삭제) 자동 재색인. 변경 없으면 아무 것도 안 함.
+    반환: 재색인했으면 True"""
+    try:
+        if not lib.needs_reindex(folder):
+            return False
+        lib.index_folder(str(folder))
+        return True
+    except Exception:
+        return False
+
+
+def _clip(text, limit):
+    return text if len(text) <= limit else text[:limit] + " (...)"
+
+
+def build_chat_context(question, proj_lib, my_lib, per_chunk=1500, total_limit=14000):
+    """자유 질문용: 내 논문 색인 + 프로젝트 참고문헌 라이브러리에서 질문 관련 청크를 찾아
+    Claude에 넘길 근거 블록을 만든다. 반환: (근거 텍스트 또는 "", 참고 목록[{kind, source, score}])"""
+    refs, blocks, used = [], [], 0
+    groups = [
+        ("내 논문", my_lib, 3, "[내 논문 — 사용자가 직접 쓴 논문]"),
+        ("라이브러리", proj_lib, 4, "[참고문헌 라이브러리 — 사용자가 수집한 논문]"),
+    ]
+    for kind, lib, k, heading in groups:
+        if lib is None or not lib.is_ready():
+            continue
+        try:
+            results = lib.search(question, top_k=k, per_source=2)
+        except Exception:
+            results = []
+        if not results:
+            continue
+        lines = [heading]
+        for r in results:
+            snippet = _clip(r["text"], per_chunk)
+            if used + len(snippet) > total_limit:
+                break
+            used += len(snippet)
+            lines.append(f"<자료 출처=\"{r['source']}\" 구분=\"{kind}\">\n{snippet}\n</자료>")
+            refs.append({"kind": kind, "source": r["source"], "score": float(r["score"])})
+        if len(lines) > 1:
+            blocks.append("\n\n".join(lines))
+    return ("\n\n".join(blocks) if blocks else ""), refs
+
+
+def augment_question(question, context):
+    """검색 근거를 붙인 사용자 메시지(API 전송용). 화면에는 원래 질문만 표시한다."""
+    return f"""아래는 저장소에서 질문과 관련해 검색된 자료입니다. 참고해서 답해주세요.
+
+{context}
+
+[질문]
+{question}
+
+답변 규칙:
+- 위 자료에 관련 내용이 있으면 그것을 우선 근거로 삼고, 어느 자료(구분·출처 이름)에서 나온 내용인지 밝히세요. "내 논문" 자료는 질문자가 직접 쓴 논문입니다.
+- 자료에 없는 내용을 자료에 있는 것처럼 말하지 마세요. 일반 지식으로 보충할 때는 자료와 구분해서 말하세요.
+- 자료가 질문과 무관하면 자료를 억지로 끌어오지 말고 그냥 질문에 답하세요."""
+
+
 def insert_citations(draft_text, search_results, style_profile=None):
     ref_texts = "\n\n".join(
         f"[논문 {i+1}: {r['source']}]\n{r['text']}"
@@ -562,6 +624,7 @@ st.title("📝 논문 작성 도우미")
 st.caption("교육공학 논문 작성을 위한 AI 에이전트")
 
 library = get_library(str(DB_DIR))
+my_library = get_library(str(MY_PAPERS_DB))   # 내 논문(전역) 검색 색인
 
 # ── 사이드바 ──────────────────────────────────────────────────
 with st.sidebar:
@@ -651,6 +714,12 @@ with st.sidebar:
     my_pdfs = list(MY_PAPERS_DIR.glob("*.pdf"))
     if my_pdfs:
         st.caption(f"업로드된 내 논문: {len(my_pdfs)}개")
+        # 자유 질문에서 내 논문을 검색할 수 있게 색인 (폴더와 색인이 다를 때만 실행)
+        if my_library.needs_reindex(MY_PAPERS_DIR):
+            with st.spinner("내 논문 검색 색인 만드는 중..."):
+                ensure_my_papers_indexed(my_library, MY_PAPERS_DIR)
+        if my_library.is_ready():
+            st.caption(f"🔎 자유 질문에서 내 논문 {my_library.count_papers()}편을 검색해 답해요.")
         if st.button("🔍 스타일 분석 시작", use_container_width=True):
             with st.spinner("논문 읽는 중..."):
                 papers = load_my_papers(str(MY_PAPERS_DIR))
@@ -673,6 +742,7 @@ with st.sidebar:
     st.divider()
     if st.button("대화 초기화"):
         st.session_state.messages = []
+        st.session_state.pop("chat_refs", None)
         st.rerun()
 
 # ── 세션 초기화 ───────────────────────────────────────────────
@@ -2340,26 +2410,64 @@ elif mode == "🔖 학술지 형식 · 참고문헌 변환":
 
 # ── 대화 기록 표시 ────────────────────────────────────────────
 if mode in ["💬 자유 질문", "🏗️ 논문 구조 설계"]:
-    for msg in st.session_state.messages:
+    # 자유 질문: 내 논문 + 참고문헌 라이브러리를 검색해 근거로 넘긴다 (끄면 일반 대화)
+    use_docs = False
+    if mode == "💬 자유 질문":
+        if MY_PAPERS_DIR.exists() and my_library.needs_reindex(MY_PAPERS_DIR):
+            ensure_my_papers_indexed(my_library, MY_PAPERS_DIR)
+        _n_my = my_library.count_papers() if my_library.is_ready() else 0
+        _n_lib = library.count_papers() if library.is_ready() else 0
+        _has_docs = (_n_my + _n_lib) > 0
+        use_docs = st.checkbox(
+            f"📎 내 자료 참고해 답하기 — 내 논문 {_n_my}편 · 참고문헌 라이브러리 {_n_lib}편",
+            value=_has_docs, disabled=not _has_docs, key="chat_use_docs",
+            help="질문마다 저장소의 내 논문(사이드바 업로드)과 현재 프로젝트의 참고문헌 라이브러리를 검색해 "
+                 "관련 내용을 근거로 답해요." if _has_docs
+            else "사이드바에 내 논문 PDF를 올리거나, 단락 작성 모드에서 참고문헌을 학습시키면 사용할 수 있어요.",
+        )
+    _chat_refs = st.session_state.setdefault("chat_refs", {})
+
+    for _mi, msg in enumerate(st.session_state.messages):
         display_content = msg["content"]
         if len(display_content) > 500 and msg["role"] == "user":
             display_content = display_content[:300] + "\n\n...(내용 생략)..."
         with st.chat_message(msg["role"]):
             st.write(display_content)
+            _refs = _chat_refs.get(str(_mi)) if msg["role"] == "assistant" else None
+            if _refs:
+                with st.expander(f"📎 참고한 자료 {len(_refs)}개"):
+                    for r in _refs:
+                        st.caption(f"[{r['kind']}] {r['source']} (관련도 {r['score']:.2f})")
 
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+        _q = st.session_state.messages[-1]["content"]
+        _api_msgs = st.session_state.messages
+        _refs = []
+        if use_docs:
+            with st.spinner("내 논문·라이브러리에서 관련 내용 찾는 중..."):
+                _ctx, _refs = build_chat_context(_q, library, my_library)
+            if _ctx:
+                # 마지막 질문에만 근거를 붙여 전송 — 화면·기록에는 원래 질문만 남김
+                _api_msgs = st.session_state.messages[:-1] + [
+                    {"role": "user", "content": augment_question(_q, _ctx)}]
         with st.chat_message("assistant"):
             with st.spinner("답변 생성 중..."):
-                response, truncated = chat_with_claude(
-                    st.session_state.messages, return_truncated=True
-                )
+                response, truncated = chat_with_claude(_api_msgs, return_truncated=True)
                 st.write(response)
                 if truncated:
                     st.warning("⚠️ 답변이 길어 출력이 일부 잘렸어요. 항목 수를 나눠서 다시 시도하면 전부 표시됩니다.")
+                if _refs:
+                    with st.expander(f"📎 참고한 자료 {len(_refs)}개"):
+                        for r in _refs:
+                            st.caption(f"[{r['kind']}] {r['source']} (관련도 {r['score']:.2f})")
+                elif use_docs:
+                    st.caption("📎 저장소에서 이 질문과 관련된 내용을 찾지 못해 일반 지식으로 답했어요.")
+        if _refs:
+            _chat_refs[str(len(st.session_state.messages))] = _refs
         st.session_state.messages.append({"role": "assistant", "content": response})
 
     if mode == "💬 자유 질문":
-        user_input = st.chat_input("논문 작성에 대해 무엇이든 물어보세요...")
+        user_input = st.chat_input("논문 작성에 대해 무엇이든 물어보세요... (내 논문에 대해서도 질문 가능)")
         if user_input:
             st.session_state.messages.append({"role": "user", "content": user_input})
             st.rerun()

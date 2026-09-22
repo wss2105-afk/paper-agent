@@ -32,6 +32,7 @@ class ReferenceLibrary:
         self.metadata_file = self.db_path / "metadata.json"
         self.documents = []
         self.metadata = []
+        self._doc_tokens = []
         self.bm25 = None
         self._load()
 
@@ -43,7 +44,8 @@ class ReferenceLibrary:
                 # 저장된 토큰이 아니라 원문에서 현재 토크나이저로 재생성 →
                 # 토크나이저를 개선하면 재색인 없이도 다음 로드에 바로 반영됨.
                 if self.documents:
-                    self.bm25 = BM25Okapi([tokenize(d) for d in self.documents])
+                    self._doc_tokens = [tokenize(d) for d in self.documents]
+                    self.bm25 = BM25Okapi(self._doc_tokens)
             with open(self.metadata_file, "r", encoding="utf-8") as f:
                 self.metadata = json.load(f)
 
@@ -81,9 +83,10 @@ class ReferenceLibrary:
             if progress_callback:
                 progress_callback(i + 1, len(pdf_files), pdf_path.name)
 
-        if self.documents:
-            self.bm25 = BM25Okapi([tokenize(d) for d in self.documents])
-            self._save()
+        # 문서가 없으면 bm25=None으로 비우고도 저장 → 파일을 다 지운 뒤 옛 색인이 남지 않게
+        self._doc_tokens = [tokenize(d) for d in self.documents]
+        self.bm25 = BM25Okapi(self._doc_tokens) if self.documents else None
+        self._save()
 
         return indexed, errors
 
@@ -113,7 +116,16 @@ class ReferenceLibrary:
         if not self.bm25 or not self.documents:
             return []
 
-        scores = self.bm25.get_scores(tokenize(query))
+        q_tokens = tokenize(query)
+        scores = self.bm25.get_scores(q_tokens)
+        if len(scores) and max(scores) <= 0:
+            # 청크가 아주 적을 때(논문 1편 등) BM25 IDF가 0 이하로 떨어져 점수가 전부 0이 됨
+            # → 질의 토큰 일치 개수로 대체 (색인된 내 논문이 한 편이어도 검색되게)
+            qset = set(q_tokens)
+            # '에서' 같은 흔한 글자쌍 하나로 매칭되는 걸 막기 위해 최소 일치 수 요구
+            min_hits = max(2, -(-len(qset) * 3 // 10))  # ceil(30%)
+            hits = [len(qset & set(toks)) for toks in self._doc_tokens]
+            scores = [h if h >= min_hits else 0 for h in hits]
 
         top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
 
@@ -151,6 +163,15 @@ class ReferenceLibrary:
             if meta["source"] == source and meta["chunk_id"] == 0:
                 return doc[:max_chars]
         return ""
+
+    def indexed_filenames(self):
+        """색인에 들어 있는 PDF 파일명 집합"""
+        return {m["filename"] for m in self.metadata}
+
+    def needs_reindex(self, folder_path):
+        """폴더의 PDF 목록과 색인된 파일 목록이 다르면 True (추가·삭제 감지)"""
+        current = {p.name for p in Path(folder_path).glob("**/*.pdf")}
+        return current != self.indexed_filenames()
 
     def count_papers(self):
         sources = {m["source"] for m in self.metadata}
