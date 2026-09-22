@@ -241,6 +241,83 @@ def write_paragraph_with_refs(topic, style, results, style_profile=None, languag
     return response.content[0].text
 
 
+def _gen_lib_queries(manuscript, instruction=""):
+    """원고에서 라이브러리 검색용 키워드 질의 4~6개(한국어·영어 혼합)를 Claude로 뽑는다.
+    실패하면 빈 리스트."""
+    head = manuscript[:6000]
+    ctx = f"\n작성 요청: {instruction}" if instruction else ""
+    prompt = f"""다음은 논문을 위해 작업 중인 원고입니다. 이 원고의 주장을 뒷받침할 선행연구를 참고문헌 라이브러리에서 찾기 위한 검색어를 만들어주세요.{ctx}
+
+[원고]
+{head}
+
+규칙:
+- 4~6개. 원고의 핵심 개념·이론·변수·맥락을 서로 다른 각도에서 다루도록.
+- 각 검색어는 2~6단어. 한국어 검색어와 영어 검색어를 섞어서(라이브러리 논문이 한국어·영어 혼재).
+- JSON 배열만 출력. 예: ["블렌디드 러닝 학습동기", "self-determination theory autonomy"]"""
+    try:
+        resp = chat_with_claude([{"role": "user", "content": prompt}])
+        m = re.search(r"\[.*?\]", resp, re.S)
+        qs = json.loads(m.group(0)) if m else []
+        return [str(q).strip() for q in qs if isinstance(q, str) and str(q).strip()][:6]
+    except Exception:
+        return []
+
+
+def _segment_manuscript(text, target=200, max_len=600, min_len=40):
+    """원고를 검색 질의용 구간으로 나눈다. 줄(문단) 단위로 이어붙여 target자 이상이 되면 끊고,
+    max_len을 넘기면 강제로 끊는다. 메모식 짧은 줄들은 몇 줄씩 묶이고, 긴 문단은 각자 한 구간."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    segs, cur = [], ""
+    for ln in lines:
+        if cur and len(cur) + 1 + len(ln) > max_len:
+            segs.append(cur)
+            cur = ""
+        cur = f"{cur} {ln}".strip() if cur else ln
+        if len(cur) >= target:
+            segs.append(cur)
+            cur = ""
+    if cur:
+        segs.append(cur)
+    return [sg for sg in segs if len(sg) >= min_len]
+
+
+def search_library_for_manuscript(lib, manuscript, instruction="", top_k=10, per_source=2,
+                                  max_segments=12, extra_queries=None):
+    """원고 전체를 근거로 라이브러리에서 폭넓게 문헌을 찾는다.
+    (1) 작성 요청문 (2) 원고를 문단 단위 ~600자 구간으로 나눈 각 구간 (3) extra_queries(키워드)
+    각각을 BM25 검색하고, 순위 융합(RRF)으로 논문별 점수를 합산해 상위 top_k편을 고른다.
+    → 원고 앞부분 한 번만 검색하던 방식보다 원고 전체 논지에 걸친 문헌이 골고루 잡힌다."""
+    queries = []
+    if instruction:
+        queries.append(instruction)
+    segs = _segment_manuscript(manuscript)
+    if len(segs) > max_segments:  # 긴 원고는 균등 샘플링
+        step = len(segs) / max_segments
+        segs = [segs[int(i * step)] for i in range(max_segments)]
+    queries.extend(segs)
+    queries.extend(extra_queries or [])
+
+    fused = {}   # source → {"score": RRF 합, "best": (rank, result)}
+    for q in queries:
+        try:
+            hits = lib.search(q, top_k=top_k, per_source=per_source)
+        except Exception:
+            continue
+        for rank, r in enumerate(hits):
+            entry = fused.setdefault(r["source"], {"score": 0.0, "best": (rank, r)})
+            entry["score"] += 1.0 / (rank + 3)
+            if rank < entry["best"][0]:
+                entry["best"] = (rank, r)
+    ranked = sorted(fused.values(), key=lambda e: e["score"], reverse=True)[:top_k]
+    results = []
+    for e in ranked:
+        r = dict(e["best"][1])
+        r["score"] = round(e["score"], 3)
+        results.append(r)
+    return results, len(queries)
+
+
 def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, results=None,
                                      heads=None, style_profile=None, language="한국어",
                                      length="표준 (한 단락)"):
@@ -285,7 +362,8 @@ def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, re
 {source_list}
 """
         cite_rule = ("선행연구 인용은 위 [참고문헌 내용]에 실제로 있는 자료만 사용하세요. 저자·연도가 [논문 첫머리]에서 "
-                     "확인되면 APA식 (저자, 연도)로, 확인되지 않으면 출처 이름 그대로 쓰세요. 원고의 주장을 뒷받침하는 "
+                     "확인되면 APA식 (저자, 연도)로, 확인되지 않으면 출처 이름 그대로 쓰세요. 가능한 한 여러 문헌을 "
+                     "고루 인용하고, 같은 논점에 여러 문헌이 있으면 함께 묶어 인용하세요. 원고의 주장을 뒷받침하는 "
                      "자료가 없으면 인용을 만들지 말고 그 문장 뒤에 [인용 필요]라고 표시하세요. "
                      "원고에 이미 있는 (저자, 연도) 인용은 그대로 살리세요.")
         ref_list_rule = ("\n6. 글 맨 아래에 참고문헌 항목(영어면 \"References:\", 한국어면 \"**참고문헌:**\")으로 "
@@ -296,7 +374,19 @@ def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, re
                      "저자·연도·문헌을 절대 지어내지 마세요. 원고에 이미 있는 (저자, 연도) 인용은 그대로 살리세요.")
         ref_list_rule = ""
 
-    prompt = f"""아래 [내 원고]는 제가 논문을 위해 작업 중인 문서(초안·메모·정리 노트 등)입니다. 이 원고의 내용을 바탕으로 학술 논문에 바로 쓸 수 있는 단락 {n_paras}개를 작성해주세요.
+    if results:
+        intro = (f"아래 [내 원고]는 제가 논문을 위해 작업 중인 문서(초안·메모·정리 노트 등)이고, [참고문헌 내용]은 제가 수집해 둔 "
+                 f"선행연구 라이브러리에서 이 원고와 관련해 검색된 자료입니다. 원고의 논지·주장·구성을 기준으로 삼고, "
+                 f"참고문헌 라이브러리의 내용을 근거로 살을 붙여 학술 논문에 바로 쓸 수 있는 단락 {n_paras}개를 작성해주세요.")
+        ground_rule = ("원고는 '무엇을 주장하고 어떤 순서로 전개할지'의 기준입니다. 근거·개념 정의·이론 설명·선행연구 결과는 "
+                       "[참고문헌 내용]에서 적극적으로 가져와 원고보다 풍부하게 쓰세요. 원고의 표현이 메모 수준이면 학술적 "
+                       "문장으로 다듬으세요. 단, 원고에도 참고문헌에도 없는 사실·수치·연구 결과는 절대 보태지 마세요.")
+    else:
+        intro = (f"아래 [내 원고]는 제가 논문을 위해 작업 중인 문서(초안·메모·정리 노트 등)입니다. 이 원고의 내용을 바탕으로 "
+                 f"학술 논문에 바로 쓸 수 있는 단락 {n_paras}개를 작성해주세요.")
+        ground_rule = ("원고에 실제로 있는 내용·주장·자료만 사용하세요. 원고에 없는 연구 결과·수치·사실을 보태지 마세요. "
+                       "원고의 표현이 메모 수준이면 학술적 문장으로 다듬어 논리적으로 전개하세요.")
+    prompt = f"""{intro}
 
 작성 언어: {lang_line}
 단락 유형: {type_line}
@@ -307,7 +397,7 @@ def write_paragraphs_from_manuscript(manuscript, instruction, style, n_paras, re
 {manuscript}
 {ref_block}
 작성 지침:
-1. 원고에 실제로 있는 내용·주장·자료만 사용하세요. 원고에 없는 연구 결과·수치·사실을 보태지 마세요. 원고의 표현이 메모 수준이면 학술적 문장으로 다듬어 논리적으로 전개하세요.
+1. {ground_rule}
 2. 원고에서 서로 관련된 내용은 하나의 단락으로 묶고, 주장→근거→의미의 흐름이 드러나게 쓰세요. 원고 문장을 그대로 복사하지 말고 재구성하세요. 원고의 숫자·기호·용어 표기는 바꾸지 마세요.
 3. {cite_rule}
 4. 단락은 서로 내용이 겹치지 않게 하고, 각각 논문의 어느 절에 들어갈지 명확히 하세요.
@@ -883,26 +973,37 @@ if mode == "📚 단락 작성 · 논문 분석":
                 help="사이드바에서 내 논문 스타일을 분석한 뒤 사용 가능해요." if not ms_profile else "내 문체·관점을 반영해 작성합니다.",
             )
             _lib_ready = library.is_ready()
+            _lib_n = library.count_papers() if _lib_ready else 0
             ms_use_lib = _mo2.checkbox(
-                "📁 라이브러리 참고문헌 인용 반영", value=_lib_ready, disabled=not _lib_ready, key="ms_use_lib",
-                help="위 참고문헌 라이브러리에서 관련 논문을 찾아 (저자, 연도) 인용을 넣어요." if _lib_ready
+                f"📁 라이브러리 참고문헌을 근거로 작성 (학습된 논문 {_lib_n}편)",
+                value=_lib_ready, disabled=not _lib_ready, key="ms_use_lib",
+                help="원고의 논지를 기준으로, 라이브러리 전체에서 관련 문헌을 찾아 근거·인용을 붙여 작성해요." if _lib_ready
                 else "위에서 PDF를 업로드하고 '문헌 학습 시작'을 누르면 사용 가능해요.",
             )
+            if ms_use_lib:
+                ms_refs_k = st.slider(
+                    "참고할 논문 수 (최대)", 3, max(3, min(25, _lib_n)), min(10, max(3, _lib_n)), key="ms_refs_k",
+                    help="원고를 구간별로 나눠 라이브러리를 검색하고, 자주·높게 잡히는 논문부터 이 수만큼 골라요. "
+                         "많을수록 근거가 풍부하지만 작성 시간이 늘어요.",
+                )
 
             if st.button("📝 원고로 단락 작성", use_container_width=True, key="ms_run"):
                 ms_results, ms_heads = [], {}
                 if ms_use_lib:
-                    with st.spinner("라이브러리에서 관련 문헌 검색 중..."):
-                        _q = ms_instruction.strip() or ms_text[:800]
-                        try:
-                            ms_results = library.search(_q, top_k=5, per_source=2)
-                        except Exception:
-                            ms_results = []
+                    with st.spinner("원고 전체를 기준으로 라이브러리 검색 중... (구간별 + 키워드)"):
+                        # 라이브러리 논문이 영어인데 원고가 한국어면 BM25가 못 잇으므로 키워드(한·영)도 함께 검색
+                        _kw = _gen_lib_queries(ms_text, ms_instruction.strip())
+                        ms_results, _nq = search_library_for_manuscript(
+                            library, ms_text, ms_instruction.strip(),
+                            top_k=ms_refs_k, per_source=2, extra_queries=_kw)
                     if ms_results:
                         ms_heads = {r["source"]: library.get_head(r["source"]) for r in ms_results}
-                        with st.expander(f"🔍 인용에 사용할 참고문헌 {len(ms_results)}개", expanded=False):
+                        with st.expander(f"🔍 근거로 사용할 참고문헌 {len(ms_results)}편 "
+                                         f"(라이브러리 {_lib_n}편 중 · 검색 질의 {_nq}개)", expanded=False):
+                            if _kw:
+                                st.caption("키워드 질의: " + " · ".join(_kw))
                             for r in ms_results:
-                                st.markdown(f"**{r['source']}** (관련도: {r['score']:.2f})")
+                                st.markdown(f"**{r['source']}** (융합 점수: {r['score']:.2f})")
                                 st.caption(r["text"][:200] + "...")
                     else:
                         st.caption("라이브러리에서 관련 문헌을 찾지 못해 인용 없이 작성해요 (인용 필요한 곳은 표시).")
